@@ -33,6 +33,8 @@ $(function(){
     $("#info-panel-right a:contains('[edit]')").addClass('btn btn-small btn-info');
     $("#info-panel-right a:contains('[edit]')").text('Edit');
 
+//Conflicts with code for sidemenu in math4-overrides.js.dist
+/*
     // Add a button to make the sidebar more dynamic for small screens
     $('#toggle-sidebar').removeClass('btn-primary').click(function (event) {
 	    event.preventDefault();
@@ -46,7 +48,7 @@ $(function(){
     if($(window).width() < 480) {
 	$('#toggle-sidebar').click();
     }
-
+*/
     // if no fish eye then collapse site-navigation 
     if($('#site-links').length > 0 && !$('#site-links').html().match(/[^\s]/)) {
 	$('#site-navigation').removeClass('span2');

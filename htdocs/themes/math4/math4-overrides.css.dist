@@ -306,3 +306,34 @@ span.ResultsWithErrorInResultsTable {
 .cheevoinnerbar {
     background-color: #0088CC;
 }
+
+/* Sidemenu */
+    #site-navigation {
+    	display:none;
+    }
+	#site-navigation.toggled-on {
+		display: block;
+	}
+
+
+@media screen and (max-width: 825px){
+    #site-navigation {
+    	display:none;
+    }
+	#site-navigation.toggled-on {
+		display: block;
+		float: left !important;		
+		width: 25% !important; 
+		margin-top: 1ex;
+	}
+	#content {
+		float: left !important;	
+		width: 100% !important;
+	}
+	#content.sidemenu-toggled-on {
+		float: left !important;
+		width: calc(75% - 10px) !important;
+		margin-left: 10px !important;
+	}
+}
+
