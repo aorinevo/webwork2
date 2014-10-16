@@ -33,22 +33,42 @@ $(function(){
     $("#info-panel-right a:contains('[edit]')").addClass('btn btn-small btn-info');
     $("#info-panel-right a:contains('[edit]')").text('Edit');
 
-//Conflicts with code for sidemenu in math4-overrides.js.dist
-/*
-    // Add a button to make the sidebar more dynamic for small screens
-    $('#toggle-sidebar').removeClass('btn-primary').click(function (event) {
+	//Sidemenu
+	$('#site-navigation').addClass('toggled-on');
+	$('#content').addClass('sidemenu-toggled-on');
+
+	//Hide/Show the sidemenu when $('#toggle-sidebar') is clicked
+	$('#toggle-sidebar').removeClass('btn-primary').click(function (event) {
 	    event.preventDefault();
-	    $('#site-navigation').toggleClass('hidden');
-	    $('#toggle-sidebar-icon').toggleClass('icon-chevron-left')
-		.toggleClass('icon-chevron-right');
-	    $('#site-navigation').toggleClass('span2');
-	    $('#content').toggleClass('span10').toggleClass('span11');
+	    $('#site-navigation').toggleClass('toggled-on');
+	    $('#content').toggleClass('sidemenu-toggled-on');	    
+	    if($('#site-navigation').hasClass('toggled-on')){
+	    	$('#content').addClass('span10 sidemenu-toggled-on').removeClass('span12');	    	
+			$('#toggle-sidebar-icon').addClass('icon-chevron-left').removeClass('icon-chevron-right');	    
+	    }else{
+	    	$('#content').addClass('span12').removeClass('span10 sidemenu-toggled-on'); 	    		    	
+			$('#toggle-sidebar-icon').removeClass('icon-chevron-left').addClass('icon-chevron-right');	    	    
+	    }
 	});
 
-    if($(window).width() < 480) {
-	$('#toggle-sidebar').click();
-    }
-*/
+	var ANSM = {};
+	ANSM.windowlt825 = $(window).width() <= 825 ? 1 : 0;
+
+	//Hide/Show the sidemenu when $('#toggle-sidebar') when window is resized.
+	$(window).resize(function(){
+	    if($(window).width() < 825 && !ANSM.windowlt825) {   
+			$('#site-navigation').removeClass('toggled-on');
+			$('#content').removeClass('sidemenu-toggled-on');	
+		    $('#toggle-sidebar-icon').removeClass('icon-chevron-left').addClass('icon-chevron-right');
+		    ANSM.windowlt825 = 1;
+	    }else if($(window).width() > 825 && ANSM.windowlt825){
+			$('#site-navigation').addClass('toggled-on');
+			$('#content').removeClass('span12').addClass('sidemenu-toggled-on span10');		
+		    $('#toggle-sidebar-icon').addClass('icon-chevron-left').removeClass('icon-chevron-right');    
+	    	ANSM.windowlt825 = 0;    
+    	}
+	});
+	
     // if no fish eye then collapse site-navigation 
     if($('#site-links').length > 0 && !$('#site-links').html().match(/[^\s]/)) {
 	$('#site-navigation').removeClass('span2');
