@@ -216,5 +216,36 @@ $(function(){
 	    $('.ui-datepicker-trigger').addClass('btn').parent().addClass('input-append');
 	});
     }
-});    
+    
+    $('.tab-content').before('<button class="btn btn-primary btn-lg" data-toggle="modal" data-target="#myModal">Launch demo modal</button>');
+    var xyz = $('.tab-content').next();    
+	if(xyz.prop('tagName') != 'DIV'){
+		xyz.wrap('<div class="modal-footer">');
+	} else {
+	   xyz.addClass('modal-footer');
+	}
+
+	$('.old-tabber.nav.nav-tabs').wrap('<div class="modal-header">');
+if($(window).width()<768){	
+	$('.old-tabber.nav.nav-tabs').wrap('<div class="dropdown">');
+	$('.old-tabber.nav.nav-tabs').before('<a class="btn dropdown-toggle" data-toggle="dropdown" href="#">Dropdown <span class="caret"></span></a>');
+	$('.old-tabber.nav.nav-tabs').addClass('dropdown-menu').removeClass('nav-tabs').addClass('nav-menu');
+    $('.modal-header li').click(function(){
+		$('.modal-header .modal-title').remove();
+    	$('.modal-header').append('<div class="modal-title" id="myModalLabel">'+$(this).html()+'</div>'); 
+    	$('.modal-header .modal-title').css('font-size','20px').css('float','left').css('padding','5px');
+    });	
+}
+    $('.tab-content').addClass('modal-content').wrap('<div class="modal" id="myModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel" aria-hidden="true">').wrap('<div class="modal-dialog">');
+    $('#myModal').addClass('form-inline user-list-form').css('display','none').css('overflow', 'scroll');
+    $('#myModal').css('margin-left','0px').css('left','20px').css('top','20px').css('right','20px').css('bottom','20px').css('width','auto');
+    $('#myModal .modal-dialog').prepend($('.modal-header').css('height','50px'));   
+    $('#myModal .modal-dialog').append($('.modal-footer').css('height','60px'));
+    $('#myModal .modal-dialog .modal-footer').css('height','40px').css('bottom','0px').css('position','absolute').css('width','calc(100% - 30px)');        
+    $('#myModal .modal-dialog .modal-header').css('height','50px').css('position','absolute').css('width','calc(100% - 30px)');    
+    $('#myModal .modal-dialog .modal-content').css('bottom','60px').css('top','70px').css('position','absolute').css('height','calc(100% - 140px)').css('width','calc(100% - 30px)');    
+    $('.modal-footer br').remove();
+    $('.modal-footer').prepend('<button type="button" class="btn btn-default" data-dismiss="modal">Close</button>');
+});
+    
 
