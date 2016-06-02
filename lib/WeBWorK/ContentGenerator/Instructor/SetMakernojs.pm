@@ -207,20 +207,28 @@ sub read_set_def {
 	my @pg_files = ();
 	my ($line, $got_to_pgs, $name, @rest) = ("", 0, "");
 	if ( open (SETFILENAME, "$filePath") )    {
-		while($line = <SETFILENAME>) {
-			chomp($line);
-			$line =~ s|(#.*)||; # don't read past comments
-			if($got_to_pgs) {
-				unless ($line =~ /\S/) {next;} # skip blank lines
-				($name,@rest) = split (/\s*,\s*/,$line);
-				$name =~ s/\s*//g;
-				push @pg_files, $name;
-			} else {
-				$got_to_pgs = 1 if ($line =~ /problemList\s*=/);
-			}
+	    while($line = <SETFILENAME>) {
+		chomp($line);
+		$line =~ s|(#.*)||; # don't read past comments
+		if($got_to_pgs == 1) {
+		    unless ($line =~ /\S/) {next;} # skip blank lines
+		    ($name,@rest) = split (/\s*,\s*/,$line);
+		    $name =~ s/\s*//g;
+		    push @pg_files, $name;
+		} elsif ($got_to_pgs == 2) {
+		    # skip lines which dont identify source files
+		    unless ($line =~ /source_file\s*=\s*(\S+)/) {
+			next;
+		    }
+		    # otherwise we got the name from the regexp
+		    push @pg_files, $1;
+		} else {
+		    $got_to_pgs = 1 if ($line =~ /problemList\s*=/);
+		    $got_to_pgs = 2 if ($line =~ /problemListV2/);
 		}
+	    }
 	} else {
-		$self->addbadmessage("Cannot open $filePath");
+	    $self->addbadmessage("Cannot open $filePath");
 	}
 	# This is where we would potentially munge the pg file paths
 	# One possibility
@@ -256,15 +264,13 @@ sub add_selected {
 	my @selected = @past_problems;
 	my (@path, $file, $selected, $freeProblemID);
 	# DBFIXME count would work just as well
-	$freeProblemID = max($db->listGlobalProblems($setName)) + 1;
 	my $addedcount=0;
 
 	for $selected (@selected) {
 		if($selected->[1] & ADDED) {
 			$file = $selected->[0];
 			my $problemRecord = $self->addProblemToSet(setName => $setName,
-				sourceFile => $file, problemID => $freeProblemID);
-			$freeProblemID++;
+				sourceFile => $file);
 			$self->assignProblemToAllSetUsers($problemRecord);
 			$selected->[1] |= SUCCESS;
 			$addedcount++;
@@ -786,7 +792,7 @@ sub make_top_row {
 
 	print CGI::Tr(CGI::td({-class=>"InfoPanel", -align=>"center"},
 		"Browse ",
-		CGI::submit(-name=>"browse_npl_library", -value=>"National Problem Library", -style=>$these_widths, @dis1),
+		CGI::submit(-name=>"browse_npl_library", -value=>"Open Problem Library", -style=>$these_widths, @dis1),
 		CGI::submit(-name=>"browse_local", -value=>$r->maketext("Local Problems"), -style=>$these_widths, @dis2),
 		CGI::submit(-name=>"browse_mysets", -value=>$r->maketext("From This Course"), -style=>$these_widths, @dis3),
 		CGI::submit(-name=>"browse_setdefs", -value=>$r->maketext("Set Definition Files"), -style=>$these_widths, @dis4),
@@ -1169,9 +1175,22 @@ sub pre_header_initialize {
 				$newSetRecord->set_id($newSetName);
 				$newSetRecord->set_header("defaultHeader");
 				$newSetRecord->hardcopy_header("defaultHeader");
-				$newSetRecord->open_date(time()+60*60*24*7); # in one week
-				$newSetRecord->due_date(time()+60*60*24*7*2); # in two weeks
-				$newSetRecord->answer_date(time()+60*60*24*7*3); # in three weeks
+				# It's convenient to set the due date two weeks from now so that it is 
+				# not accidentally available to students.  
+				
+				my $dueDate = time+2*60*60*24*7;
+				my $display_tz = $ce->{siteDefaults}{timezone};
+				my $fDueDate = $self->formatDateTime($dueDate, $display_tz);
+				my $dueTime = $ce->{pg}{timeAssignDue};
+				
+				# We replace the due time by the one from the config variable
+				# and try to bring it back to unix time if possible
+				$fDueDate =~ s/\d\d:\d\d(am|pm|AM|PM)/$dueTime/;
+				
+				$dueDate = $self->parseDateTime($fDueDate, $display_tz);
+				$newSetRecord->open_date($dueDate - 60*$ce->{pg}{assignOpenPriorToDue});
+				$newSetRecord->due_date($dueDate);
+				$newSetRecord->answer_date($dueDate + 60*$ce->{pg}{answersOpenAfterDueDate});	
 				eval {$db->addGlobalSet($newSetRecord)};
 				if ($@) {
 					$self->addbadmessage("Problem creating set $newSetName<br> $@");
@@ -1298,11 +1317,6 @@ sub title {
 	return "Library Browser";
 }
 
-# hide view options panel since it distracts from SetMaker's built-in view options
-sub options {
-	return "";
-}
-
 sub body {
 	my ($self) = @_;
 
@@ -1370,7 +1384,7 @@ sub body {
 	print CGI::start_form({-method=>"POST", -action=>$r->uri, -name=>'mainform'}),
 		$self->hidden_authen_fields,
 			'<div align="center">',
-	CGI::start_table({-border=>2});
+	CGI::start_table({-class=>'library-browser-table library-browser-table-nojs', -border=>2});
 	$self->make_top_row('all_db_sets'=>\@all_db_sets, 
 				 'browse_which'=> $browse_which);
 	print CGI::hidden(-name=>'browse_which', -value=>$browse_which,-override=>1),

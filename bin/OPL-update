@@ -133,13 +133,13 @@ if($libraryVersion eq '2.5') {
 @create_tables = (
 [$tables{dbsubject}, '
 	DBsubject_id int(15) NOT NULL auto_increment,
-	name varchar(127) NOT NULL,
+	name varchar(255) NOT NULL,
 	KEY DBsubject (name),
 	PRIMARY KEY (DBsubject_id)
 '],
 [$tables{dbchapter}, '
 	DBchapter_id int(15) NOT NULL auto_increment,
-	name varchar(127) NOT NULL,
+	name varchar(255) NOT NULL,
 	DBsubject_id int(15) DEFAULT 0 NOT NULL,
 	KEY DBchapter (name),
 	KEY (DBsubject_id),
@@ -156,8 +156,8 @@ if($libraryVersion eq '2.5') {
 [$tables{author}, '
 	author_id int (15) NOT NULL auto_increment,
 	institution tinyblob,
-	lastname varchar (100) NOT NULL,
-	firstname varchar (100) NOT NULL,
+	lastname varchar (255) NOT NULL,
+	firstname varchar (255) NOT NULL,
 	email varchar (255),
 	KEY author (lastname, firstname),
 	PRIMARY KEY (author_id)
@@ -165,8 +165,8 @@ if($libraryVersion eq '2.5') {
 [$tables{path}, '
 	path_id int(15) NOT NULL auto_increment,
 	path varchar(255) NOT NULL,
-	machine varchar(127),
-	user varchar(127),
+	machine varchar(255),
+	user varchar(255),
 	KEY (path),
 	PRIMARY KEY (path_id)
 '],
@@ -179,12 +179,14 @@ if($libraryVersion eq '2.5') {
 	filename varchar(255) NOT NULL,
 	morelt_id int(127) DEFAULT 0 NOT NULL,
 	level int(15),
-	language varchar(15),
+	language varchar(255),
+	static TINYINT,
+	MO TINYINT,
 	PRIMARY KEY (pgfile_id)
 '],
 [$tables{keyword}, '
 	keyword_id int(15) NOT NULL auto_increment,
-	keyword varchar(65) NOT NULL,
+	keyword varchar(255) NOT NULL,
 	KEY (keyword),
 	PRIMARY KEY (keyword_id)
 '],
@@ -197,18 +199,18 @@ if($libraryVersion eq '2.5') {
 [$tables{textbook}, '
 	textbook_id int (15) NOT NULL auto_increment,
 	title varchar (255) NOT NULL,
-	edition int (3) DEFAULT 0 NOT NULL,
-	author varchar (63) NOT NULL,
-	publisher varchar (127),
+	edition int (15) DEFAULT 0 NOT NULL,
+	author varchar (255) NOT NULL,
+	publisher varchar (255),
 	isbn char (15),
-	pubdate varchar (27),
+	pubdate varchar (255),
 	PRIMARY KEY (textbook_id)
 '],
 [$tables{chapter}, '
 	chapter_id int (15) NOT NULL auto_increment,
 	textbook_id int (15),
 	number int(3),
-	name varchar(127) NOT NULL,
+	name varchar(255) NOT NULL,
 	page int(4),
 	KEY (textbook_id, name),
 	KEY (number),
@@ -218,7 +220,7 @@ if($libraryVersion eq '2.5') {
 	section_id int(15) NOT NULL auto_increment,
 	chapter_id int (15),
 	number int(3),
-	name varchar(127) NOT NULL,
+	name varchar(255) NOT NULL,
 	page int(4),
 	KEY (chapter_id, name),
 	KEY (number),
@@ -235,7 +237,7 @@ if($libraryVersion eq '2.5') {
 '],
 [$tables{morelt}, '
 	morelt_id int(15) NOT NULL auto_increment,
-	name varchar(127) NOT NULL,
+	name varchar(255) NOT NULL,
 	DBsection_id int(15),
 	leader int(15), # pgfile_id of the MLT leader
 	KEY (name),
@@ -436,6 +438,9 @@ if(open(IN, "$libraryRoot/Textbooks")) {
 my $clsep = '<<<';
 my $clinner = '__';
 my @cllist = ();
+# Record full taxonomy for tagging menus (does not include cross-lists)
+my $tagtaxo = [];
+my ($chaplist, $seclist) = ([],[]);
 
 my $canopenfile = 0;
 if(open(IN, "$libraryRoot/Taxonomy2")) {
@@ -475,17 +480,28 @@ if($canopenfile) {
 		# instead they go in a list of crosslists to deal with after
 		# the full taxonomy is read in
 		if($count == 0) { #DBsubject
-			$taxo->{$line} = {} if $oktag;
 			$cursub = $line;
+			if($oktag) {
+				$taxo->{$line} = {};
+				($chaplist, $seclist) = ([],[]);
+				push @{$tagtaxo}, {name=>$line, subfields=>$chaplist};
+			}
 			$subj = safe_get_id($tables{dbsubject}, 'DBsubject_id',
 				qq(WHERE name = ?), [$line], 1, "", $line);
 		} elsif($count == 1) { #DBchapter
-			$taxo->{$cursub}->{$line} = {} if $oktag;
+			if($oktag) {
+				$taxo->{$cursub}->{$line} = {};
+				$seclist=[];
+				push @{$chaplist}, {name=>$line, subfields=>$seclist};
+			}
 			$curchap = $line;
 			$chap = safe_get_id($tables{dbchapter}, 'DBchapter_id',
 				qq(WHERE name = ? and DBsubject_id = ?), [$line, $subj], 1, "", $line, $subj);
 		} else { #DBsection
-			$taxo->{$cursub}->{$curchap}->{$line} = [] if $oktag;
+			if($oktag) {
+				$taxo->{$cursub}->{$curchap}->{$line} = [];
+				push @{$seclist}, {name=>$line};
+			}
 			$sect = safe_get_id($tables{dbsection}, 'DBsection_id',
 				qq(WHERE name = ? and DBchapter_id = ?), [$line, $chap], 1, "", $line, $chap);
 		}
@@ -493,6 +509,14 @@ if($canopenfile) {
 	close(IN);
 }
 #### End of taxonomy/taxonomy2
+
+#### Save the official taxonomy in json format
+my $webwork_htdocs = $ce->{webwork_dir}."/htdocs";
+my $file = "$webwork_htdocs/DATA/tagging-taxonomy.json";
+open(OUTF, ">$file") or die "Cannot open $file";
+print OUTF to_json($tagtaxo,{pretty=>1}) or die "Cannot write to $file";
+close(OUTF);
+print "Saved taxonomy to $file.\n";
 
 #### Now deal with cross-listed sections
 for my $clinfo (@cllist) {
@@ -644,7 +668,7 @@ sub pgfiles {
 			my $path_id = safe_get_id($tables{path}, 'path_id',
 				qq(WHERE path = ?), [$pgpath], 1, "", $pgpath, "", "");
 
-			# pgfile table -- set 2 defaults first
+			# pgfile table -- set 4 defaults first
 
 			## TODO this is where we have to deal with crosslists, and pgfileid
 			##      will be an array of id's
@@ -653,12 +677,14 @@ sub pgfiles {
 			my $level = $tags->{Level} || 0;
 			# Default language is English
 			my $lang = $tags->{Language} || "en";
+			my $mathobj = $tags->{MO} || 0;
+			my $static = $tags->{Static} || 0;
 
 			my @pgfile_ids = ();
 
 			for my $DBsection_id (@DBsection_ids) {
 				my $pgfile_id = safe_get_id($tables{pgfile}, 'pgfile_id',
-					qq(WHERE filename = ? AND path_id = ? AND DBsection_id = ? ), [$pgfile, $path_id, $DBsection_id], 1, "", $DBsection_id, $author_id, $tags->{Institution}, $path_id, $pgfile, 0, $level, $lang);
+					qq(WHERE filename = ? AND path_id = ? AND DBsection_id = ? ), [$pgfile, $path_id, $DBsection_id], 1, "", $DBsection_id, $author_id, $tags->{Institution}, $path_id, $pgfile, 0, $level, $lang, $static, $mathobj);
 				push @pgfile_ids, $pgfile_id;
 			}
 #if (scalar(@pgfile_ids)>1) {
@@ -729,6 +755,8 @@ sub pgfiles {
 				$query = "SELECT textbook_id FROM `$tables{textbook}` WHERE title = \"$text\" AND edition = \"$edition\" AND author=\"$textauthor\"";
 				my $textbook_id = $dbh->selectrow_array($query);
 				if (!defined($textbook_id)) {
+ 				        # make sure edition is an integer
+				        $edition = 0 unless $edition;
 					$dbh->do("INSERT INTO `$tables{textbook}`
 					VALUES(
 						NULL,
@@ -935,5 +963,12 @@ build_library_subject_tree($ce,$dbh);
 build_library_textbook_tree($ce,$dbh);
 
 $dbh->disconnect;
+
+if ($ce->{problemLibrary}{showLibraryLocalStats} ||
+    $ce->{problemLibrary}{showLibraryGlobalStats}) {
+  print "\nUpdating Library Statistics.\n";
+  do $ENV{WEBWORK_ROOT}.'/bin/update-OPL-statistics';
+}
+
 
 print "\nDone.\n";

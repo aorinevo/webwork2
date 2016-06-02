@@ -37,7 +37,6 @@ sub pre_header_initialize {
 	my $db = $r->db;
 	my $authz = $r->authz;
 	my $urlpath = $r->urlpath;
-	my $user = $r->param('user');
 	
 	my $setName = $urlpath->arg("setID");
 	my $problemNumber = $r->urlpath->arg("problemID");
@@ -47,10 +46,13 @@ sub pre_header_initialize {
 	my $editMode = $r->param("editMode");
 	
 	# Check permissions
-	return unless $authz->hasPermissions($user, "access_instructor_tools");	
-	return unless $authz->hasPermissions($user, "score_sets");
+	return unless $authz->hasPermissions($userName, "access_instructor_tools");	
+	return unless $authz->hasPermissions($userName, "score_sets");
 
-	my $displayMode        = $r->param("displayMode") || $ce->{pg}->{options}->{displayMode};
+	my $user = $db->getUser($userName);
+	die "Couldn't find user $user" unless $user;
+
+	my $displayMode  = $user->displayMode ? $user->displayMode : $ce->{pg}->{options}->{displayMode};
 	$self->{displayMode}    = $displayMode;
 }
 
@@ -71,20 +73,6 @@ sub head {
 	
 	return "";
 
-}
-
-
-sub options {
-	my ($self) = @_;
-	
-	my $displayMode = $self->{displayMode};
-	
-	my @options_to_show = "displayMode";
-	
-	return $self->optionsMacro(
-		options_to_show => \@options_to_show,
-
-	);
 }
 
 
@@ -231,9 +219,40 @@ sub body {
 
 	my $viewProblemPage = $urlpath->new(type => 'problem_detail', args => { courseID => $courseName, setID => $setID, problemID => $problemID });
 
+	my %dropDown;
+	my $delta = $ce->{options}{problemGraderScoreDelta};
+	#construct the drop down.  
+	for (my $i=int(100/$delta); $i>=0; $i--) {
+	  $dropDown{$i*$delta}=$i*$delta;
+	}
+	
+	my @scores = sort {$b <=> $a} keys %dropDown;
+	
+	my @myUsers = ();
+	my (@viewable_sections, @viewable_recitations);
+	if (defined $ce->{viewable_sections}->{$userID})
+		{@viewable_sections = @{$ce->{viewable_sections}->{$userID}};}
+	if (defined $ce->{viewable_recitations}->{$userID})
+		{@viewable_recitations = @{$ce->{viewable_recitations}->{$userID}};}
+	if (@viewable_sections or @viewable_recitations){
+		foreach my $studentL (@users){
+			my $keep = 0;
+			my $student = $db->getUser($studentL);
+			foreach my $sec (@viewable_sections){
+				if ($student->section() eq $sec){$keep = 1; last;}
+			}
+			foreach my $rec (@viewable_recitations){
+				if ($student->recitation() eq $rec){$keep = 1; last;}
+			}
+			if ($keep) {push @myUsers, $studentL;}		
+		}
+	}
+	else {@myUsers = @users;}
+
+	
 	# get user records
 	my @userRecords  = ();
-	foreach my $currentUser ( @users) {
+	foreach my $currentUser ( @myUsers) {
 		my $userObj = $db->getUser($currentUser); #checked
 		die "Unable to find user object for $currentUser. " unless $userObj;
 		push (@userRecords, $userObj );
@@ -323,14 +342,15 @@ sub body {
 				      rows=>3,
 					cols=>30,}).CGI::br().CGI::input({-class=>'preview', -type=>'button', -name=>"$userID.preview", -value=>"Preview" }) unless $noCommentField;
 	    
-	    
-	    my %dropDown;
-	    #construct the drop down.  Right now it does all numbers from 
-	    # 1 to 100, but this could be changed by config
-	    for (my $i=100; $i>=0; $i--) {
-		    $dropDown{$i}=$i;
-	    }
 
+	    # this selects the score available in the drop down that is just above the student score
+	    my $selectedScore = 0;
+	    foreach my $item (@scores) {
+	      if ($score <= $item) {
+		$selectedScore = $item;
+	      }
+	    }
+	    
 	    print CGI::Tr({-valign=>"top"}, 
 			  CGI::td({},[
 				      $userRecord->section,
@@ -349,9 +369,9 @@ sub body {
 		
 						    }), " ",
 				      CGI::popup_menu(-name=>"$userID.score",
-						      -class=>"span1",
-						      -values => [sort {$b <=> $a} keys %dropDown],
-						      -default => $score,
+						      -class=> "score-selector",
+						      -values => \@scores,
+						      -default => $selectedScore,
 				                      -labels => \%dropDown)
 				      ," ", $commentBox
 				  ])	  
@@ -359,7 +379,7 @@ sub body {
 	    print CGI::Tr(CGI::td([CGI::hr(), CGI::hr(),"",CGI::hr(),"",CGI::hr(),"",CGI::hr(),"",CGI::hr(),"&nbsp;"]));
 
 
-#  Text field for gradex
+#  Text field for grade
 #				      CGI::input({type=>"text",
 #						  name=>"$userID.score",
 #						  value=>"$score",

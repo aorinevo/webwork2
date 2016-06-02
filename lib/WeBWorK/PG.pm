@@ -73,7 +73,7 @@ sub defineProblemEnvir {
 		$problem,
 		$psvn,  #FIXME  -- not used
 		$formFields,
-		$options,
+		$translationOptions,
 		$extras,
 	) = @_;
 	
@@ -92,7 +92,6 @@ sub defineProblemEnvir {
 	#        refreshMath2img, texDisposition
 
 	# pstaab: changed the next line from
-	
 	#$envir{psvn}                = $set->psvn;
 	# to
 	$envir{psvn}                = $psvn;
@@ -102,11 +101,11 @@ sub defineProblemEnvir {
 	$envir{fileName}            = $problem->source_file;	 
 	$envir{probFileName}        = $envir{fileName};		 
 	$envir{problemSeed}         = $problem->problem_seed;
-	$envir{displayMode}         = translateDisplayModeNames($options->{displayMode});
-	$envir{languageMode}        = $envir{displayMode};	 
+	$envir{displayMode}         = translateDisplayModeNames($translationOptions->{displayMode});
+#	$envir{languageMode}        = $envir{displayMode};	# don't believe this is ever used. 
 	$envir{outputMode}          = $envir{displayMode};	 
-	$envir{displayHintsQ}       = $options->{showHints};	 
-	$envir{displaySolutionsQ}   = $options->{showSolutions};
+	$envir{displayHintsQ}       = $translationOptions->{showHints};	 
+	$envir{displaySolutionsQ}   = $translationOptions->{showSolutions};
 	$envir{texDisposition}      = "pdf"; # in webwork2, we use pdflatex
 	
 	# Problem Information
@@ -184,8 +183,8 @@ sub defineProblemEnvir {
 	$envir{studentLogin}     = $user->user_id;
 	$envir{studentName}      = $user->first_name . " " . $user->last_name;
 	$envir{studentID}        = $user->student_id;
-	$envir{permissionLevel}  = $options->{permissionLevel};  # permission level of actual user
-	$envir{effectivePermissionLevel}  = $options->{effectivePermissionLevel}; # permission level of user assigned to this question
+	$envir{permissionLevel}  = $translationOptions->{permissionLevel};  # permission level of actual user
+	$envir{effectivePermissionLevel}  = $translationOptions->{effectivePermissionLevel}; # permission level of user assigned to this question
 	
 	
 	# Answer Information
@@ -219,6 +218,10 @@ sub defineProblemEnvir {
 	$envir{classDirectory}         = undef;
     $envir{macrosPath}             = $ce->{pg}->{directories}{macrosPath};
     $envir{appletPath}             = $ce->{pg}->{directories}{appletPath};
+    $envir{macrosPath}             = $ce->{pg}->{directories}{macrosPath};
+    $envir{htmlPath}               = $ce->{pg}->{directories}{htmlPath};
+    $envir{imagesPath}             = $ce->{pg}->{directories}{imagesPath};
+    $envir{pdfPath}                = $ce->{pg}->{directories}{pdfPath};
     $envir{pgDirectories}          = $ce->{pg}->{directories};
 	$envir{webworkHtmlDirectory}   = $ce->{webworkDirs}->{htdocs}."/";
 	$envir{webworkHtmlURL}         = $ce->{webworkURLs}->{htdocs}."/";
@@ -231,7 +234,7 @@ sub defineProblemEnvir {
 	$envir{webworkDocsURL}         = $ce->{webworkURLs}->{docs}."/";
 	$envir{localHelpURL}           = $ce->{webworkURLs}->{local_help}."/";
 	$envir{MathJaxURL}             = $ce->{webworkURLs}->{MathJax};
-	$envir{server_root_url}        = $ce->{apache_root_url}|| '';
+	$envir{server_root_url}        = $ce->{server_root_url}|| '';
 	
 	# Information for sending mail
 	
@@ -260,9 +263,13 @@ sub defineProblemEnvir {
 		#$envir{mailer} = $safe_hole->wrap($rmailer);
 		$envir{mailer} = new WeBWorK::Utils::RestrictedClosureClass($extras->{mailer}, "add_message");
 	}
+	# ADDED use_opaque_prefix and use_site_prefix
+	
+	$envir{use_site_prefix}     = $translationOptions->{use_site_prefix};
+	$envir{use_opaque_prefix}   = $translationOptions->{use_opaque_prefix};
 	
 	# Other things...
-	$envir{QUIZ_PREFIX}              = $options->{QUIZ_PREFIX}; # used by quizzes
+	$envir{QUIZ_PREFIX}              = $translationOptions->{QUIZ_PREFIX}//''; # used by quizzes
 	$envir{PROBLEM_GRADER_TO_USE}    = $ce->{pg}->{options}->{grader};
 	$envir{PRINT_FILE_NAMES_FOR}     = $ce->{pg}->{specialPGEnvironmentVars}->{PRINT_FILE_NAMES_FOR};
 
@@ -332,7 +339,7 @@ __END__
 	 $psvn,
 	 $formFields  # in &WeBWorK::Form::Vars format
 	 { # translation options
-		 displayMode     => "images", # (plainText|formattedText|images)
+		 displayMode     => "images", # (plainText|formattedText|images|MathJax)
 		 showHints       => 1,        # (0|1)
 		 showSolutions   => 0,        # (0|1)
 		 refreshMath2img => 0,        # (0|1)
@@ -417,7 +424,7 @@ a reference to a hash containing the following data:
 
 =item displayMode 
 
-one of "plainText", "formattedText", or "images"
+one of "plainText", "formattedText", "MathJax" or "images"
 
 =item showHints
 

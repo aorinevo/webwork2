@@ -34,9 +34,10 @@ use IO::File;
 use URI::Escape;
 use WeBWorK::Debug;
 use WeBWorK::Utils qw(cryptPassword writeLog listFilesRecursive trim_spaces);
-use WeBWorK::Utils::CourseManagement qw(addCourse renameCourse deleteCourse listCourses archiveCourse 
+use WeBWorK::Utils::CourseManagement qw(addCourse renameCourse retitleCourse deleteCourse listCourses archiveCourse 
                                         listArchivedCourses unarchiveCourse initNonNativeTables);
 use WeBWorK::Utils::CourseIntegrityCheck;
+use WeBWorK::DB;
 #use WeBWorK::Utils::DBImportExport qw(dbExport dbImport);
 # needed for location management
 use Net::IP;
@@ -44,11 +45,11 @@ use File::Path 'remove_tree';
 use File::stat;
 use Time::localtime;
 
-use constant IMPORT_EXPORT_WARNING => "The ability to import and export
-databases is still under development. It seems to work but it is <b>VERY</b>
-slow on large courses.  You may prefer to use webwork2/bin/wwdb  or the mysql
-dump facility for archiving large courses. Please send bug reports if you find
-errors.";
+# use constant IMPORT_EXPORT_WARNING => "The ability to import and export
+# databases is still under development. It seems to work but it is <b>VERY</b>
+# slow on large courses.  You may prefer to use webwork2/bin/wwdb  or the mysql
+# dump facility for archiving large courses. Please send bug reports if you find
+# errors.";
 
 sub pre_header_initialize {
 	my ($self) = @_;
@@ -124,13 +125,16 @@ sub pre_header_initialize {
 					$method_to_call = "rename_course_confirm";
 				}
 			} elsif (defined $r->param("confirm_rename_course")) {
-				# validate and delete
+				# validate and rename
 				@errors = $self->rename_course_validate;
 				if (@errors) {
 					$method_to_call = "rename_course_form";
 				} else {
 					$method_to_call = "do_rename_course";
 				}
+			} elsif (defined $r->param("confirm_retitle_course")) {
+				    $method_to_call = "do_retitle_course";
+			
 			} elsif (defined $r->param("upgrade_course_tables") ){
 			    # upgrade and revalidate
 			    @errors = $self->rename_course_validate;
@@ -437,7 +441,6 @@ sub body {
 	
 	print( CGI::p({style=>"text-align: center"}, $self->display_registration_form() ) ) if $self->display_registration_form();
 	
-	
 	my @errors = @{$self->{errors}};
 	
 	
@@ -460,6 +463,8 @@ sub body {
 				CGI::p(" The webwork server must be able to write to these directories. Please correct the permssion errors.") ;
 			}
 	
+		print $self->upgrade_notification();
+
 		print CGI::h2($r->maketext("Courses"));
 	
 		print CGI::start_ol();
@@ -556,7 +561,7 @@ sub add_course_form {
 	print CGI::table({class=>"FormLayout"},
 		CGI::Tr({},
 			CGI::th({class=>"LeftHeader"}, "Course ID:"),
-			CGI::td(CGI::textfield(-name=>"add_courseID", -value=>$add_courseID, -size=>25)),
+			CGI::td(CGI::textfield(-name=>"add_courseID", -value=>$add_courseID, -size=>25, -maxlength=>$ce->{maxCourseIdLength})),
 		),
 		CGI::Tr({},
 			CGI::th({class=>"LeftHeader"}, "Course Title:"),
@@ -568,10 +573,10 @@ sub add_course_form {
 		),
 	);
 	
-	print CGI::p("To add the WeBWorK administrators to the new course (as instructors) check the box below.");
+	print CGI::p("To add the WeBWorK administrators to the new course (as administrators) check the box below.");
 	my @checked = ($add_admin_users) ?(checked=>1): ();  # workaround because CGI::checkbox seems to have a bug -- it won't default to checked.
 	print CGI::p({},CGI::input({-type=>'checkbox', -name=>"add_admin_users", @checked }, "Add WeBWorK administrators to new course"));
-	
+
 	print CGI::p("To add an additional instructor to the new course, specify user information below. The user ID may contain only 
 	numbers, letters, hyphens, periods (dots), commas,and underscores.\n");
 	
@@ -783,18 +788,22 @@ sub do_add_course {
 	
 	# copy users from current (admin) course if desired
 	if ($add_admin_users ne "") {
-		foreach my $userID ($db->listUsers) {
-			if ($userID eq $add_initial_userID) {
-				$self->addbadmessage( "User '$userID' will not be copied from admin course as it is the initial instructor.");
-				next;
-			}
-			my $User            = $db->getUser($userID);
-			my $Password        = $db->getPassword($userID);
-			my $PermissionLevel = $db->getPermissionLevel($userID);
-			push @users, [ $User, $Password, $PermissionLevel ] 
-			       if $authz->hasPermissions($userID,"create_and_delete_courses");  
-			       #only transfer the "instructors" in the admin course classlist.
+
+	    foreach my $userID ($db->listUsers) {
+		if ($userID eq $add_initial_userID) {
+		    $self->addbadmessage( "User '$userID' will not be copied from admin course as it is the initial instructor.");
+		    next;
 		}
+		my $PermissionLevel = $db->newPermissionLevel();
+		$PermissionLevel->user_id($userID);
+		$PermissionLevel->permission($ce->{userRoles}->{admin});
+		my $User            = $db->getUser($userID);
+		my $Password        = $db->getPassword($userID);
+		
+		push @users, [ $User, $Password, $PermissionLevel ] 
+		    if $authz->hasPermissions($userID,"create_and_delete_courses");  
+		#only transfer the "instructors" in the admin course classlist.
+	    }
 	}
 	
 	# add initial instructor if desired
@@ -819,12 +828,20 @@ sub do_add_course {
 	}
 	
 	push @{$courseOptions{PRINT_FILE_NAMES_FOR}}, map { $_->[0]->user_id } @users;
-	
+
+	# include any optional arguments, including a template course and the 
+	# course title and course institution. 
 	my %optional_arguments;
 	if ($add_templates_course ne "") {
 		$optional_arguments{templatesFrom} = $add_templates_course;
 	}
-	
+	if ($add_courseTitle ne "") {
+		$optional_arguments{courseTitle} = $add_courseTitle;
+	}
+	if ($add_courseInstitution ne "") {
+		$optional_arguments{courseInstitution} = $add_courseInstitution;
+	}
+
 	eval {
 		addCourse(
 			courseID      => $add_courseID,
@@ -918,19 +935,30 @@ sub rename_course_form {
 	#my $authz = $r->authz;
 	#my $urlpath = $r->urlpath;
 	
-	my $rename_oldCourseID     = $r->param("rename_oldCourseID")     || "";
-	my $rename_newCourseID     = $r->param("rename_newCourseID")     || "";
+#	my $rename_oldCourseID     = $r->param("rename_oldCourseID")     || "";
+#	my $rename_newCourseID     = $r->param("rename_newCourseID")     || "";
+
+	my $rename_oldCourseID           = $r->param("rename_oldCourseID")     || "";
+	my $rename_newCourseID           = $r->param("rename_newCourseID")     || "";
+	my $rename_newCourseID_checked   = $r->param("rename_newCourseID_checked")     || "";
+	my $rename_newCourseID_checkbox     = $r->param("rename_newCourseID_checkbox")     || "";
+
+	my $rename_newCourseTitle           = $r->param("rename_newCourseTitle")     || "";
+	my $rename_newCourseTitle_checked   = $r->param("rename_newCourseTitle_checked")     || "";
+	my $rename_newCourseTitle_checkbox     = $r->param("rename_newCourseTitle_checkbox")     || "";
+
+	my $rename_newCourseInstitution           = $r->param("rename_newCourseInstitution")     || "";
+	my $rename_newCourseInstitution_checked   = $r->param("rename_newCourseInstitution_checked")     || "";
+	my $rename_newCourseInstitution_checkbox     = $r->param("rename_newCourseInstitution_checkbox")     || "";
+
+
+
 	
 	my @courseIDs = listCourses($ce);
 	@courseIDs    = sort {lc($a) cmp lc ($b) } @courseIDs;
 	
 	my %courseLabels; # records... heh.
 	foreach my $courseID (@courseIDs) {
-#		my $tempCE = new WeBWorK::CourseEnvironment({
-#			%WeBWorK::SeedCE,
-#			courseName => $courseID,
-#		});
-#		$courseLabels{$courseID} = "$courseID (" . $tempCE->{dbLayoutName} . ")";
 		$courseLabels{$courseID} = "$courseID";
 	}
 	
@@ -940,11 +968,14 @@ sub rename_course_form {
 	print $self->hidden_authen_fields;
 	print $self->hidden_fields("subDisplay");
 	
-	print CGI::p("Select a course to rename.");
+	print CGI::p("Select a course to rename. 
+				  The courseID is used in the url and can only contain alphanumeric characters and underscores.
+	              The course title appears on the course home page and can be any string.");
+	
 	
 	print CGI::table({class=>"FormLayout"},
 		CGI::Tr({},
-			CGI::th({class=>"LeftHeader"}, "Course Name:"),
+			CGI::th({class=>"LeftHeader"}, "Course ID:"),
 			CGI::td(
 				CGI::scrolling_list(
 					-name => "rename_oldCourseID",
@@ -957,8 +988,37 @@ sub rename_course_form {
 			),
 		),
 		CGI::Tr({},
-			CGI::th({class=>"LeftHeader"}, "New Name:"),
-			CGI::td(CGI::textfield(-name=>"rename_newCourseID", -value=>$rename_newCourseID, -size=>25)),
+			CGI::td( CGI::checkbox(
+				{name=>"rename_newCourseID_checkbox", 
+				 label=>'Change CourseID to:', 
+				 checked=>$rename_newCourseID_checkbox,
+				 value=>'on',
+				 }) ),
+			#CGI::th({class=>"LeftHeader"}, "New CourseID:"),
+			CGI::td(CGI::textfield(-name=>"rename_newCourseID",
+			     -value=>$rename_newCourseID, -size=>25, -maxlength=>$ce->{maxCourseIdLength})),
+		),
+		CGI::Tr({},
+			CGI::td( CGI::checkbox(
+				{name=>"rename_newCourseTitle_checkbox", 
+				 -label=>'Change Course Title to:', 
+				 -selected=>$rename_newCourseTitle_checkbox,
+				 -value=>'on'
+				 }) ),
+			#CGI::th({class=>"LeftHeader"}, "Change Course Title to:"),
+			CGI::td(CGI::textfield(-name=>"rename_newCourseTitle",
+					 -value=>$rename_newCourseTitle, -size=>25)),
+		),
+		CGI::Tr({},
+			CGI::td( CGI::checkbox(
+				{name=>"rename_newCourseInstitution_checkbox", 
+				 label=>'Change Institution to:', 
+				 checked=>$rename_newCourseInstitution_checkbox,
+				 value=>'on'
+				 }) ),
+			#CGI::th({class=>"LeftHeader"}, "Change institution to:"),
+			CGI::td(CGI::textfield(-name=>"rename_newCourseInstitution", 
+			      -value=>$rename_newCourseInstitution, -size=>25)),
 		),
 	);
 	
@@ -973,17 +1033,72 @@ sub rename_course_confirm {
     my ($self) = @_;
 	my $r = $self->r;
 	my $ce = $r->ce;
-	#my $db = $r->db;
-	#my $authz = $r->authz;
-	#my $urlpath = $r->urlpath;
 
-    my $rename_oldCourseID     = $r->param("rename_oldCourseID")     || "";
-	my $rename_newCourseID     = $r->param("rename_newCourseID")     || "";
+	my $rename_oldCourseID           = $r->param("rename_oldCourseID")     || "";
+	my $rename_newCourseID           = $r->param("rename_newCourseID")     || "";
+	my $rename_newCourseID_checkbox     = $r->param("rename_newCourseID_checkbox")  || "";    ;
+
+	my $rename_newCourseTitle           = $r->param("rename_newCourseTitle")     || "";
+	my $rename_newCourseTitle_checkbox  = $r->param("rename_newCourseTitle_checkbox")    || ""; ;
+ 	my $rename_newCourseInstitution           = $r->param("rename_newCourseInstitution")     || "";
+	my $rename_newCourseInstitution_checkbox     = $r->param("rename_newCourseInstitution_checkbox") || ""   ;
+
 
 	my $ce2 = new WeBWorK::CourseEnvironment({
 		%WeBWorK::SeedCE,
 		courseName => $rename_oldCourseID,
 	});
+######################################################
+## Create strings confirming title and institution change
+######################################################
+	# connect to database to get old title and institution
+	my $dbLayoutName = $ce->{dbLayoutName};
+	my $db = new WeBWorK::DB($ce->{dbLayouts}->{$dbLayoutName});
+	my $oldDB =new WeBWorK::DB($ce2->{dbLayouts}->{$dbLayoutName});
+	my $rename_oldCourseTitle = $oldDB->getSettingValue('courseTitle')//'""';
+	my $rename_oldCourseInstitution = $oldDB->getSettingValue('courseInstitution')//'""';
+	
+	my ($change_course_title_str, $change_course_institution_str)=("");
+	if ( $rename_newCourseTitle_checkbox) {
+		$change_course_title_str ="Change title from $rename_oldCourseTitle to $rename_newCourseTitle";
+	}
+	if ( $rename_newCourseInstitution_checkbox) {
+		$change_course_institution_str="Change course institution from 
+		    $rename_oldCourseInstitution to $rename_newCourseInstitution";
+	}
+
+#############################################################################
+# If we are only changing the title or institution we can cut this short
+#############################################################################
+	unless ($rename_newCourseID_checkbox) {  # in this case do not change course ID
+		print CGI::start_form(-method=>"POST", -action=>$r->uri);
+		print $self->hidden_authen_fields;
+		print $self->hidden_fields("subDisplay");
+		print $self->hidden_fields(qw/rename_oldCourseID rename_newCourseID
+		  rename_newCourseTitle rename_newCourseInstitution
+		  rename_newCourseID_checkbox rename_newCourseInstitution_checkbox
+		  rename_newCourseTitle_checkbox /);
+		print CGI::hidden(-name=>"rename_oldCourseTitle", 
+					  -default=>$rename_oldCourseTitle, 
+		              -id=>"hidden_rename_oldCourseTitle");
+		print CGI::hidden(-name=>"rename_oldCourseInstitution", 
+		              -default=>$rename_oldCourseInstitution, 
+		              -id=>"hidden_rename_oldCourseInstitution");
+
+		print CGI::div({style=>"text-align: left"},
+			    CGI::hr(),			    
+			    CGI::h4("Make these changes in  course: $rename_oldCourseID"),
+			    CGI::p($change_course_title_str),
+			    CGI::p($change_course_institution_str),
+				CGI::submit(-name=>"decline_retitle_course", -value=>"Don't make changes"),
+				"&nbsp;",
+				CGI::submit(-name=>"confirm_retitle_course", -value=>"Make changes") ,
+			    CGI::hr(),
+			);
+		 print CGI::end_form();
+         return;
+	}
+
 #############################################################################
 # Check database
 #############################################################################
@@ -1100,14 +1215,29 @@ sub rename_course_confirm {
 		print CGI::start_form(-method=>"POST", -action=>$r->uri);
 		print $self->hidden_authen_fields;
 		print $self->hidden_fields("subDisplay");
-		print $self->hidden_fields(qw/rename_oldCourseID rename_newCourseID/);
+		print $self->hidden_fields(qw/rename_oldCourseID rename_newCourseID
+		  rename_newCourseTitle rename_newCourseInstitution
+		  rename_newCourseID_checkbox rename_newCourseInstitution_checkbox
+		  rename_newCourseTitle_checkbox /);
+		print CGI::hidden(-name=>"rename_oldCourseTitle", 
+					  -default=>$rename_oldCourseTitle, 
+		              -id=>"hidden_rename_oldCourseTitle");
+		print CGI::hidden(-name=>"rename_oldCourseInstitution", 
+		              -default=>$rename_oldCourseInstitution, 
+		              -id=>"hidden_rename_oldCourseInstitution");
+
+
 			# grab some values we'll need
-        # fail if the source course does not exist
+            # fail if the source course does not exist
 
 		
 		
 		if ($all_tables_ok && $directories_ok ) { # no missing tables or missing fields or directories
 			print CGI::p({style=>"text-align: center"},
+			    CGI::hr(),
+			    CGI::h4("Rename $rename_oldCourseID to $rename_newCourseID"),
+			    CGI::div($change_course_title_str),
+			    CGI::div($change_course_institution_str),
 				CGI::submit(-name=>"decline_rename_course", -value=>"Don't rename"),
 				"&nbsp;",
 				CGI::submit(-name=>"confirm_rename_course", -value=>"Rename") ,
@@ -1124,28 +1254,32 @@ sub rename_course_confirm {
 				CGI::br(),"Directory structure needs to be repaired manually before renaming."
 			);
 		} 
+		print CGI::end_form();
 	}
 }
 sub rename_course_validate {
 	my ($self) = @_;
 	my $r = $self->r;
 	my $ce = $r->ce;
-	#my $db = $r->db;
-	#my $authz = $r->authz;
-	#my $urlpath = $r->urlpath;
 	
-	my $rename_oldCourseID     = $r->param("rename_oldCourseID")     || "";
-	my $rename_newCourseID     = $r->param("rename_newCourseID")     || "";
+	my $rename_oldCourseID              = $r->param("rename_oldCourseID")     || "";
+	my $rename_newCourseID              = $r->param("rename_newCourseID")     || "";
+	my $rename_newCourseID_checkbox     = $r->param("rename_newCourseID_checkbox")   || "";  ;
+
+	my $rename_newCourseTitle           = $r->param("rename_newCourseTitle")     || "";
+	my $rename_newCourseTitle_checkbox  = $r->param("rename_newCourseTitle_checkbox")  || ""   ;
+ 	my $rename_newCourseInstitution           = $r->param("rename_newCourseInstitution")     || "";
+	my $rename_newCourseInstitution_checkbox     = $r->param("rename_newCourseInstitution_checkbox")  || ""  ;
 	
 	my @errors;
 	
 	if ($rename_oldCourseID eq "") {
 		push @errors, "You must select a course to rename.";
 	}
-	if ($rename_newCourseID eq "") {
+	if ($rename_newCourseID eq "" and $rename_newCourseID_checkbox eq 'on' ) {
 		push @errors, "You must specify a new name for the course.";
 	}
-	if ($rename_oldCourseID eq $rename_newCourseID) {
+	if ($rename_oldCourseID eq $rename_newCourseID and $rename_newCourseID_checkbox eq 'on') {
 		push @errors, "Can't rename to the same name.";
 	}
 	unless ($rename_newCourseID =~ /^[\w-]*$/) { # regex copied from CourseAdministration.pm
@@ -1154,13 +1288,94 @@ sub rename_course_validate {
 	if (grep { $rename_newCourseID eq $_ } listCourses($ce)) {
 		push @errors, "A course with ID $rename_newCourseID already exists.";
 	}
-	
-	my $ce2 = new WeBWorK::CourseEnvironment({
-		%WeBWorK::SeedCE,
-		courseName => $rename_oldCourseID,
-	});
+	if ($rename_newCourseTitle eq "" and $rename_newCourseTitle_checkbox eq 'on')  {
+		push @errors, "You must specify a new title for the course.";
+	}
+	if ($rename_newCourseInstitution eq "" and $rename_newCourseInstitution_checkbox eq 'on')  {
+		push @errors, "You must specify a new institution for the course.";
+	}
+	unless ($rename_newCourseID or $rename_newCourseID_checkbox or $rename_newCourseTitle_checkbox or $rename_newCourseInstitution_checkbox) {
+		push @errors, "No changes specified.  You must mark the 
+		checkbox of the item(s) to be changed and enter the change data.";
+	}
 	
 	return @errors;
+}
+
+sub do_retitle_course {
+	my ($self) = @_;
+	my $r = $self->r;
+	my $ce = $r->ce;
+	my $db = $r->db;
+	#my $authz = $r->authz;
+	my $urlpath = $r->urlpath;
+	
+	my $rename_oldCourseID           = $r->param("rename_oldCourseID")     || "";
+#	my $rename_newCourseID           = $r->param("rename_newCourseID")     || "";
+#   There is no new course, but there are new titles and institutions
+	my $rename_newCourseTitle         = $r->param("rename_newCourseTitle")     || "";
+	my $rename_newCourseInstitution   = $r->param("rename_newCourseInstitution")     || "";
+	my $rename_oldCourseTitle         = $r->param("rename_oldCourseTitle")     || "";
+	my $rename_oldCourseInstitution   = $r->param("rename_oldCourseInstitution")     || "";
+	my $title_checkbox                = $r->param("rename_newCourseTitle_checkbox")  || ""   ;
+	my $institution_checkbox          = $r->param("rename_newCourseInstitution_checkbox")  || ""  ;
+	
+#	$rename_newCourseID = $rename_oldCourseID ;  #since they are the same FIXME
+	# define new courseTitle and new courseInstitution
+	my %optional_arguments = ();
+	$optional_arguments{courseTitle}       = $rename_newCourseTitle if $title_checkbox;
+	$optional_arguments{courseInstitution} = $rename_newCourseInstitution if $institution_checkbox;
+
+	my $ce2;
+	my %dbOptions =();
+	eval {
+		$ce2 = new WeBWorK::CourseEnvironment({
+			%WeBWorK::SeedCE,
+			courseName => $rename_oldCourseID,
+		});
+	};
+	warn "failed to create environment in do_retitle_course $@" if $@;
+
+	eval {  
+		retitleCourse(
+			courseID      => $rename_oldCourseID,
+			ce            => $ce2,
+			dbOptions     => \%dbOptions,
+			%optional_arguments,
+		);
+	};
+	if ($@) {
+		my $error = $@;
+		print CGI::div({class=>"ResultsWithError"},
+			CGI::p("An error occured while changing the title of the ourse
+			        the course $rename_oldCourseID "),
+			CGI::tt(CGI::escapeHTML($error)),
+		);
+	} else {
+		print CGI::div({class=>"ResultsWithoutError"},
+			($title_checkbox) ? CGI::div("The title of the course $rename_oldCourseID 
+			has been changed from $rename_oldCourseTitle to $rename_newCourseTitle")
+			:'', 
+			($institution_checkbox) ? CGI::div("The institution associated with 
+			the course $rename_oldCourseID has been changed from 
+			$rename_oldCourseInstitution to  $rename_newCourseInstitution")
+			:'', 
+		);
+		 writeLog($ce, "hosted_courses", join("\t",
+	    	"\tRetitled",
+	    	"",
+	    	"",
+	    	"$rename_oldCourseID title and institution changed 
+	    	 from $rename_oldCourseTitle to $rename_newCourseTitle 
+	    	 and from $rename_oldCourseInstitution to $rename_newCourseInstitution",
+	    ));		
+		my $oldCoursePath = $urlpath->newFromModule("WeBWorK::ContentGenerator::ProblemSets", $r,
+			courseID => $rename_oldCourseID);
+		my $oldCourseURL = $self->systemLink($oldCoursePath, authen => 0);
+		print CGI::div({style=>"text-align: center"},
+			CGI::a({href=>$oldCourseURL}, "Log into $rename_oldCourseID"),
+		);
+	}
 }
 
 sub do_rename_course {
@@ -1171,27 +1386,50 @@ sub do_rename_course {
 	#my $authz = $r->authz;
 	my $urlpath = $r->urlpath;
 	
-	my $rename_oldCourseID     = $r->param("rename_oldCourseID")     || "";
-	my $rename_newCourseID     = $r->param("rename_newCourseID")     || "";
+	my $rename_oldCourseID            = $r->param("rename_oldCourseID")     || "";
+	my $rename_newCourseID            = $r->param("rename_newCourseID")     || "";
+	my $rename_newCourseTitle         = $r->param("rename_newCourseTitle")     || "";
+	my $rename_newCourseInstitution   = $r->param("rename_newCourseInstitution")     || "";
+	my $title_checkbox                = $r->param("rename_newCourseTitle_checkbox")  || ""   ;
+	my $institution_checkbox          = $r->param("rename_newCourseInstitution_checkbox")  || ""  ;
 	
+
 	my $ce2 = new WeBWorK::CourseEnvironment({
 		%WeBWorK::SeedCE,
 		courseName => $rename_oldCourseID,
 	});
-	
+
 	my $dbLayoutName = $ce->{dbLayoutName};
+
+	# define new courseTitle and new courseInstitution
+	my %optional_arguments = ();
+	my ($title_message, $institution_message);
+	if ($title_checkbox) {
+		$optional_arguments{courseTitle}       = $rename_newCourseTitle;
+		$title_message = qq!The title of the course $rename_newCourseID is now $rename_newCourseTitle!, 
 	
+	} else {
+		
+	}
+	if ($institution_checkbox) {
+		$optional_arguments{courseInstitution} = $rename_newCourseInstitution;
+		$institution_message = qq!The institution associated with the course $rename_newCourseID is now $rename_newCourseInstitution!, 
+
+	}
+
+		
 	# this is kinda left over from when we had 'gdbm' and 'sql' database layouts
 	# below this line, we would grab values from getopt and put them in this hash
 	# but for now the hash can remain empty
 	my %dbOptions;
-	
+
 	eval {
 		renameCourse(
 			courseID      => $rename_oldCourseID,
 			ce            => $ce2,
 			dbOptions     => \%dbOptions,
 			newCourseID   => $rename_newCourseID,
+			%optional_arguments,
 		);
 	};
 	if ($@) {
@@ -1202,6 +1440,8 @@ sub do_rename_course {
 		);
 	} else {
 		print CGI::div({class=>"ResultsWithoutError"},
+			CGI::p($title_message),
+			CGI::p($institution_message),
 			CGI::p("Successfully renamed the course $rename_oldCourseID to $rename_newCourseID"),
 		);
 		 writeLog($ce, "hosted_courses", join("\t",
@@ -1240,14 +1480,6 @@ sub delete_course_form {
 	my $delete_listing_format   = $r->param("delete_listing_format"); 
 	unless (defined $delete_listing_format) {$delete_listing_format = 'alphabetically';}  #use the default
 	
-#	my %courseLabels; # records... heh.
-#	foreach my $courseID (@courseIDs) {
-#		my $tempCE = new WeBWorK::CourseEnvironment({
-#			%WeBWorK::SeedCE,
-#			courseName => $courseID,
-#		});
-#		$courseLabels{$courseID} = "$courseID (" . $tempCE->{dbLayoutName} . ")";
-#	}
 	# Get and store last modify time for login.log for all courses. Also get visibility status.
 	my %courseLabels;
 	my @noLoginLogIDs = ();
@@ -1478,14 +1710,6 @@ sub archive_course_form {
 	my $archive_listing_format   = $r->param("archive_listing_format"); 
 	unless (defined $archive_listing_format) {$archive_listing_format = 'alphabetically';}  #use the default
 	
-#	my %courseLabels; # records... heh.
-#	foreach my $courseID (@courseIDs) {
-#		my $tempCE = new WeBWorK::CourseEnvironment({
-#			%WeBWorK::SeedCE,
-#			courseName => $courseID,
-#		});
-#		$courseLabels{$courseID} = "$courseID (" . $tempCE->{dbLayoutName} . ")";
-#	}
 	# Get and store last modify time for login.log for all courses. Also get visibility status.
 	my %courseLabels;
 	my @noLoginLogIDs = ();
@@ -1518,7 +1742,7 @@ sub archive_course_form {
 		@courseIDs = sort {lc($a) cmp lc ($b) } @courseIDs;
 	}
 	
-	print CGI::h2("archive Course");
+	print CGI::h2("Archive Course");
 	
 	print CGI::p(
 		'Creates a gzipped tar archive (.tar.gz) of a course in the WeBWorK
@@ -1624,7 +1848,7 @@ sub archive_course_confirm {
 	#my $authz = $r->authz;
 	#my $urlpath = $r->urlpath;
 	
-	print CGI::h2("archive Course");
+	print CGI::h2("Archive Course");
 	
 	my $delete_course_flag   = $r->param("delete_course")        || "";
 	
@@ -1789,7 +2013,7 @@ sub archive_course_confirm {
 				CGI::submit(-name=>"decline_archive_course", -value=>"Stop archiving"),
 				"&nbsp;",
 				(@archive_courseIDs)? CGI::submit(-name=>"archive_course", -value=>"Skip archiving this course")."&nbsp;":'',
-				CGI::submit(-name=>"confirm_archive_course", -value=>"archive") ,
+				CGI::submit(-name=>"confirm_archive_course", -value=>"Archive") ,
 			);
 		} elsif( $directories_ok)  {
 			print CGI::p({style=>"text-align: center"},
@@ -1986,10 +2210,10 @@ sub unarchive_course_form {
 	
 		CGI::Tr({},
 				CGI::th({class=>"LeftHeader"}, CGI::checkbox(-name => "create_newCourseID",-default=>'',-value=>1, -label=>'New Name:')),
-				CGI::td(CGI::textfield(-name=>"new_courseID", -value=>'', -size=>25)),
+				CGI::td(CGI::textfield(-name=>"new_courseID", -value=>'', -size=>25, -maxlength=>$ce->{maxCourseIdLength})),
 			),
 	);
-	
+
 	print CGI::p({style=>"text-align: center"}, CGI::submit(-name=>"unarchive_course", -value=>"Unarchive Course"));
 	
 	print CGI::end_form();
@@ -2060,9 +2284,9 @@ sub unarchive_course_confirm {
 	print $self->hidden_fields(qw/unarchive_courseID create_newCourseID/);
 	
 	print CGI::p({style=>"text-align: center"},
-		CGI::submit(-name=>"decline_unarchive_course", -value=>"Don't unarchive"),
+		CGI::submit(-name=>"decline_unarchive_course", -value=>"Don't Unarchive"),
 		"&nbsp;",
-		CGI::submit(-name=>"confirm_unarchive_course", -value=>"unarchive"),
+		CGI::submit(-name=>"confirm_unarchive_course", -value=>"Unarchive"),
 	);
 	
 	print CGI::end_form();
@@ -2118,7 +2342,7 @@ sub do_unarchive_course {
 		print $self->hidden_authen_fields;
 		print $self->hidden_fields("subDisplay");
 		print CGI::hidden("unarchive_courseID",$unarchive_courseID);
-		print CGI::p( CGI::submit("decline_unarchive_course", "unarchive next course")  );
+		print CGI::p( CGI::submit("decline_unarchive_course", "Unarchive Next Course")  );
  		print CGI::end_form();
  
 	}
@@ -2581,7 +2805,7 @@ sub add_location_handler {
 
 	# a check to be sure that the location addresses don't already
 	#    exist
-	my $badLocAddr;
+	my $badLocAddr = '';
 	if ( ! $badAddr && $locationID ) {
 		if ( $db->countLocationAddresses( $locationID ) ) {
 			my @allLocAddr = $db->listLocationAddresses($locationID);
@@ -3176,6 +3400,229 @@ Check the ownership and permissions of the course's directory, e.g $coursesDir/$
 }
 
 
+sub upgrade_notification {
+    my $self = shift;
+    my $r = $self->r;
+    my $ce = $r->ce;
+    my $db = $r->db;
+
+    # exit if notifications are disabled
+    return unless $ce->{enableGitUpgradeNotifier};
+
+    my $git = $ce->{externalPrograms}->{git};
+    my $WeBWorKRemote = $ce->{gitWeBWorKRemoteName};
+    my $WeBWorKBranch = $ce->{gitWeBWorKBranchName};
+    my $PGRemote = $ce->{gitPGRemoteName};
+    my $PGBranch = $ce->{gitPGBranchName};
+    my $LibraryRemote = $ce->{gitLibraryRemoteName};
+    my $LibraryBranch = $ce->{gitLibraryBranchName};
+
+    # we can tproceed unless we have git; 
+    if (!(defined($git) && -x $git)) {
+	warn('External Program "git" not found.  Check your site.conf');
+	return;
+    }
+
+    my $upgradeMessage = '';
+    my $upgradesAvailable = 0;
+    my $output;
+    my @lines;
+    my $commit;
+
+    if ($WeBWorKRemote && $WeBWorKBranch) {
+    # Check if there is an updated version of webwork available
+    # this is done by using ls-remote to get the commit sha at the 
+    # head of the remote branch and looking to see if that sha is in
+    # the currently selected local branch
+	chdir($ce->{webwork_dir});
+	my $currentBranch = `$git symbolic-ref --short HEAD`;
+	$output = `$git ls-remote --heads $WeBWorKRemote`;
+	@lines = split /\n/, $output;
+	$commit=-1;
+
+	foreach my $line (@lines) {
+	    if ($line =~ /refs\/heads\/$WeBWorKBranch$/) {
+		$line =~ /^(\w+)/;
+		$commit = $1;
+		last;
+	    }
+	}
+	
+	$output = `$git branch --contains $commit`;
+
+	if ($commit ne '-1' && $output !~ /\s+$currentBranch(\s+|$)/) {    
+	    # There are upgrades, we need to figure out if its a 
+	    # new version or not
+	    # This is done by using ls-remote to get the commit sha's
+	    # at the heads of the remote tags.  
+	    # Tags of the form WeBWorK-x.y are release tags.  If there is
+	    # an sha there which isn't in the current branch then there must
+	    # be a newer version. 
+
+	    $output = `$git ls-remote --tags $WeBWorKRemote`;
+	    @lines = split /\n/, $output;
+	    my $newversion = 0;
+	    
+	    foreach my $line (@lines) {
+		next unless $line =~ /\/tags\/WeBWorK-/;
+		$line =~ /^(\w+)/;
+		$commit = $1;
+		$output = `$git branch --contains $commit`;
+	
+		if ($output !~ /\s+$currentBranch(\s+|$)/) {
+		    # There is a version tag which contains a commit that
+		    # isn't in the current branch so there must
+		    # be a new version
+		    $newversion = 1;
+		    last;
+		}
+	    }
+	    
+	    if ($newversion) {
+		$upgradesAvailable = 1;
+		$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There is a new version of WeBWorK available.')));
+	    } else {
+		$upgradesAvailable = 1;
+		$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There are upgrades available for your current branch of WeBWorK from branch [_1] in remote [_2].', $WeBWorKBranch, $WeBWorKRemote)));
+	    }
+	} elsif ($commit eq '-1') {
+	    $upgradesAvailable = 1;
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext("Couldn't find WeBWorK Branch [_1] in remote [_2]", $WeBWorKBranch, $WeBWorKRemote)));
+	}  else {
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext('Your current branch of WeBWorK is up to date with branch [_1] in remote [_2].', $WeBWorKBranch, $WeBWorKRemote)));
+	}
+    } 
+
+    if ($PGRemote && $PGBranch) {
+	# Check if there is an updated version of pg available
+	# this is done by using ls-remote to get the commit sha at the 
+	# head of the remote branch and looking to see if that sha is in
+	# the currently selected local branch 
+	chdir($ce->{pg_dir});
+	my $currentBranch = `$git symbolic-ref --short HEAD`;
+	$output = `$git ls-remote --heads $PGRemote`;
+	@lines = split /\n/, $output;
+	$commit='-1';
+	
+	foreach my $line (@lines) {
+	    if ($line =~ /refs\/heads\/$PGBranch$/) {
+		$line =~ /^(\w+)\s+/;
+		$commit = $1;
+		last;
+	    }
+	}
+	
+	$output = `$git branch --contains $commit`;
+	
+	if ($commit ne '-1' && $output !~ /\s+$currentBranch(\s+|$)/) {    
+	    # There are upgrades, we need to figure out if its a 
+	    # new version or not
+	    # This is done by using ls-remote to get the commit sha's
+	    # at the heads of the remote tags.  
+	    # Tags of the form WeBWorK-x.y are release tags.  If there is
+	    # an sha there which isn't in the local branch then there must
+	    # be a newer version. 
+	    $output = `$git ls-remote --tags $PGRemote`;
+	    @lines = split /\n/, $output;
+	    my $newversion = 0;
+	    
+	    foreach my $line (@lines) {
+		next unless $line =~ /\/tags\/PG-/;
+		$line =~ /^(\w+)/;
+		$commit = $1;
+		$output = `$git branch --contains $commit`;
+		if ($output !~ /\s+$currentBranch(\s+|$)/) {
+		    # There is a version tag which contains a commit that
+		    # isn't in the current branch so there must
+		    # be a new version
+		    $newversion = 1;
+		    last;
+		}
+	    }
+	    
+	    if ($newversion) {
+		$upgradesAvailable = 1;
+		$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There is a new version of PG available.')));
+	    } else {
+		$upgradesAvailable = 1;
+		$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There are upgrades available for your current branch of PG from branch [_1] in remote [_2].', $PGBranch, $PGRemote)));
+	    } 		
+	} elsif ($commit eq '-1') {
+	    $upgradesAvailable = 1;
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext("Couldn't find PG Branch [_1] in remote [_2]", $PGBranch, $PGRemote)));
+	}  else {
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext('Your current branch of PG is up to date with branch [_1] in remote [_2].', $PGBranch, $PGRemote)));
+
+	} 
+    } 
+
+    die "Couldn't find ".$ce->{problemLibrary}{root}.'.  Are you sure $problemLibrary{root} is set correctly in localOverrides.conf?' unless
+	chdir($ce->{problemLibrary}{root}); 
+    
+    if ($LibraryRemote && $LibraryBranch) {
+	# Check if there is an updated version of the OPL available
+	# this is done by using ls-remote to get the commit sha at the 
+	# head of the remote branch and looking to see if that sha is in
+	# the local current branch
+	my $currentBranch = `$git symbolic-ref --short HEAD`;
+	$output = `$git ls-remote --heads $LibraryRemote`;
+	@lines = split /\n/, $output;
+	$commit='-1';
+	
+	foreach my $line (@lines) {
+	    if ($line =~ /refs\/heads\/$LibraryBranch$/) {
+		$line =~ /^(\w+)\s+/;
+		$commit = $1;
+		last;
+	    }
+	}
+	
+	$output = `$git branch --contains $commit`;
+
+	if ($commit ne '-1' && $output !~ /\s+$currentBranch(\s+|$)/) {    
+	    $upgradesAvailable = 1;
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There are upgrades available for the Open Problem Library.')));
+	} elsif ($commit eq '-1') {
+	    $upgradesAvailable = 1;
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext("Couldn't find OPL Branch [_1] in remote [_2]", $LibraryBranch, $LibraryRemote)));
+	} else {
+	    $upgradeMessage .= CGI::Tr(CGI::td($r->maketext('Your current branch of the Open Problem Library is up to date.', $LibraryBranch, $LibraryRemote)));
+	}
+    } 
+
+    # Check to see if the OPL_update script has been run more recently
+    # than the last pull of the library. 
+    # this json file is (re)-created every time OPL-update is run. 
+    my $jsonfile = $ce->{webworkDirs}{htdocs}.'/DATA/'.$ce->{problemLibrary}{tree};
+    # If no json file then the OPL script needs to be run
+    unless (-e $jsonfile) {
+	$upgradesAvailable = 1;
+	$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('There is no library tree file for the library, you will need to run OPL-update.')));
+    # otherwise we need to check to see if the date on the tree file
+    # is after the date on the last commit in the library
+    } else {
+	my $opldate = stat($jsonfile)->[9];
+	# skip this if the system doesnt support mtime
+	if ($opldate) {
+	    my $lastcommit = `git log -1 --pretty=format:%at`;
+	    if ($lastcommit > $opldate) {
+		$upgradesAvailable = 1;
+		$upgradeMessage .= CGI::Tr(CGI::td($r->maketext('The library index is older than the library, you need to run OPL-update.')));
+	    }
+	}
+    } 
+
+    chdir($ce->{webwork_dir});
+
+    if ($upgradesAvailable) {
+	$upgradeMessage = CGI::Tr(CGI::th($r->maketext('The following upgrades are available for your WeBWorK system:'))).$upgradeMessage;
+	return CGI::center(CGI::table({class=>"admin-messagebox"},$upgradeMessage));
+    } else {
+	return CGI::center(CGI::div({class=>"ResultsWithoutError"},
+				    $r->maketext('Your systems are up to date!')));
+    }
+
+}
 
 ################################################################################
 #   registration forms added by Mike Gage 5-5-2008
@@ -3195,8 +3642,7 @@ sub display_registration_form {
 	return 0  if $registeredQ or $register_site or $registration_subDisplay;     #otherwise return registration form
 	return  q! 
 	<center>
-	<table class="messagebox" style="background-color:#FFFFCC;width:60%">
-	<tr><td>
+	<table class="admin-messagebox"><tr><td>
 	!,
 	CGI::p("If you are using your WeBWorK server for courses please help us out by registering your server."),
 	CGI::p("We are often asked how many institutions are using WeBWorK and how many students are using
