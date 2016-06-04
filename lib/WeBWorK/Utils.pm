@@ -39,11 +39,7 @@ use Errno;
 use File::Path qw(rmtree);
 use Storable;
 use Carp;
-<<<<<<< HEAD
 use Dancer qw(:script);
-=======
-use Mail::Sender;
->>>>>>> 2b8e5f2379f7b53abbf11851a7f3b2269ecb7e39
 
 use constant MKDIR_ATTEMPTS => 10;
 
