@@ -177,7 +177,19 @@ use constant  FIELD_PROPERTIES => {
 #		type => "number",
 #		size => 2,
 #		access => "readwrite",
-	}
+	},
+	displayMode => {
+	    access => 'hidden',
+	},
+	showOldAnswers => {
+	    access => 'hidden',
+	},
+	useMathView => {
+	    access => 'hidden',
+        },
+        lis_source_did => {
+	    access => 'hidden',
+	},
 };
 sub pre_header_initialize {
 	my $self          = shift;
@@ -213,6 +225,25 @@ sub pre_header_initialize {
 		$self->reply_with_redirect($uri);
 		return;
 	};
+
+	defined($r->param('action')) && $r->param('action') eq 'edit' && do {
+		# fix url and redirect
+		my $root              = $ce->{webworkURLs}->{root};
+		
+		my $numberOfStudents  = $r->param('number_of_students');
+		warn $r->maketext("number of students not defined") unless defined $numberOfStudents;
+
+		my $uri=$self->systemLink( $urlpath->newFromModule('WeBWorK::ContentGenerator::Instructor::AddUsers', $r, courseID=>$courseName),
+		                           params=>{
+		                          			number_of_students=>$numberOfStudents,
+		                                   }
+		);
+		#FIXME  does the display mode need to be defined?
+		#FIXME  url_authen_args also includes an effective user, so the new one must come first.
+		# even that might not work with every browser since there are two effective User assignments.
+		$self->reply_with_redirect($uri);
+		return;
+	};	
 }
 
 sub initialize {
@@ -621,7 +652,17 @@ sub filter_form {
 	my $r = $self->r;
 	
 	my %prettyFieldNames = %{ $self->{prettyFieldNames} };
+	my %fieldProperties = %{ FIELD_PROPERTIES() };
 	
+	my @fields;
+	
+	foreach my $field (keys %fieldProperties) {
+	    push @fields, $field unless
+		$fieldProperties{$field}{access} eq 'hidden';
+	}
+
+	@fields = sort {$prettyFieldNames{$a} cmp $prettyFieldNames{$b}} @fields;
+
 	return join("",
 			WeBWorK::CGI_labeled_input(
 				-type=>"select",
@@ -649,7 +690,7 @@ sub filter_form {
 				-label_text=>$r->maketext("What field should filtered users match on?").": ",
 				-input_attr=>{
 					-name => "action.filter.field",
-					-value => [ keys %{ FIELD_PROPERTIES() } ],
+					-value => \@fields,
 					-default => $actionParams{"action.filter.field"}->[0] || "user_id",
 					-labels => \%prettyFieldNames,
 					-onchange => $onChange
@@ -659,12 +700,13 @@ sub filter_form {
 			WeBWorK::CGI_labeled_input(
 				-type=>"text",
 				-id=>"filter_text",
-				-label_text=>$r->maketext("Filter by what text?").": ",
+				-label_text=>$r->maketext("Filter by what text?").CGI::span({class=>"required-field"},'*').": ",
 				-input_attr=>{
 					-name => "action.filter.user_ids",
 					-value => $actionParams{"action.filter.user_ids"}->[0] || "",,
 					-width => "50",
 					-onchange => $onChange,
+					-'aria-required' => 'true', 
 				}
 			),
 			CGI::br(),
@@ -994,7 +1036,7 @@ sub add_form {
 	my ($self, $onChange, %actionParams) = @_;
 	my $r = $self->r;
 
-	return WeBWorK::CGI_labeled_input(-type=>"text", -id=>"add_entry", -label_text=>$r->maketext("Add how many students?").": ", -input_attr=>{name=>'number_of_students', value=>1,size => 3});
+	return WeBWorK::CGI_labeled_input(-type=>"text", -id=>"add_entry", -label_text=>$r->maketext("Add how many students?").CGI::span({class=>"required-field"},'*').": ", -input_attr=>{name=>'number_of_students', value=>1,size => 3,'aria-required'=>'true'});
 }
 
 sub add_handler {
@@ -1132,12 +1174,13 @@ sub export_form {
 		WeBWorK::CGI_labeled_input(
 			-type=>"text",
 			-id=>"export_filename",
-			-label_text=>$r->maketext("Filename").": ",
+			-label_text=>$r->maketext("Filename").CGI::span({class=>"required-field"},'*').": ",
 			-input_attr=>{
 				-name => "action.export.new",
 				-value => $actionParams{"action.export.new"}->[0] || "",,
 				-width => "50",
 				-onchange => $onChange,
+				-'aria-required' => 'true',
 			}
 		),
 		CGI::tt(".lst"),
@@ -1215,7 +1258,9 @@ sub saveEdit_handler {
 	my ($self, $genericParams, $actionParams, $tableParams) = @_;
 	my $r           = $self->r;
 	my $db          = $r->db;
-	
+	my $editorUser = $r->param('user');
+	my $editorUserPermission = $db->getPermissionLevel($editorUser)->permission;	
+
 	my @visibleUserIDs = @{ $self->{visibleUserIDs} };
 	foreach my $userID (@visibleUserIDs) {
 		my $User = $db->getUser($userID); # checked
@@ -1231,7 +1276,8 @@ sub saveEdit_handler {
 		
 		foreach my $field ($PermissionLevel->NONKEYFIELDS()) {
 			my $param = "permission.${userID}.${field}";
-			if (defined $tableParams->{$param}->[0]) {
+			if (defined $tableParams->{$param}->[0] &&
+			    $tableParams->{$param}->[0] <= $editorUserPermission) {
 				$PermissionLevel->$field($tableParams->{$param}->[0]);
 			}
 		}
@@ -1294,11 +1340,16 @@ sub savePassword_handler {
 		die $r->maketext("record for visible user [_1] not found", $userID) unless $User;
 		my $param = "user.${userID}.new_password";
 			if ((defined $tableParams->{$param}->[0]) and ($tableParams->{$param}->[0])) {
-				my $newP = $tableParams->{$param}->[0];
-				my $Password = eval {$db->getPassword($User->user_id)}; # checked	 	
-				my 	$cryptPassword = cryptPassword($newP);											 
-				$Password->password(cryptPassword($newP));
-				eval { $db->putPassword($Password) };				
+			  my $newP = $tableParams->{$param}->[0];
+			  my $Password = eval {$db->getPassword($User->user_id)}; # checked
+			  my 	$cryptPassword = cryptPassword($newP);											 				if (!defined($Password)) {
+			    $Password = $db->newPassword();
+			    $Password->user_id($userID);
+			    $Password->password(cryptPassword($newP));
+			    eval { $db->addPassword($Password) };		             		} else { 
+			      
+			      $Password->password(cryptPassword($newP));
+			      eval { $db->putPassword($Password) };		             		}
 			}
 	}
 	
@@ -1486,7 +1537,10 @@ sub exportUsersToCSV {
 sub fieldEditHTML {
 	my ($self, $fieldName, $value, $properties) = @_;
 	my $r = $self->r;
-	my $ce = $self->r->ce;
+	my $ce = $r->ce;
+	my $db = $r->db;
+	my $editorUser = $r->param('user');
+	my $editorUserPermission = $db->getPermissionLevel($editorUser)->permission;
 	my $size = $properties->{size};
 	my $type = $properties->{type};
 	my $access = $properties->{access};
@@ -1576,7 +1630,7 @@ sub fieldEditHTML {
 		my %roles = %{$ce->{userRoles}};
 		foreach my $role (sort {$roles{$a}<=>$roles{$b}} keys(%roles) ) {
 			my $val = $roles{$role};
-
+			next unless $val <= $editorUserPermission;
 			push(@values, $val);
 			$labels{$val} = $role;
 			$default = $val if ( $value eq $role );
@@ -1630,7 +1684,11 @@ sub recordEditHTML {
 	my $userListURL = $self->systemLink($urlpath->new(type=>'instructor_user_list2', args=>{courseID => $courseName} )) . "&editMode=1&visible_users=" . $User->user_id;
 
 	my $imageURL = $ce->{webworkURLs}->{htdocs}."/images/edit.gif";
-        my $imageLink = CGI::a({href => $userListURL}, CGI::img({src=>$imageURL, border=>0, alt=>"Link to Edit Page for ".$User->user_id}));
+        my $imageLink = '';
+
+	if ($authz->hasPermissions($user, "modify_student_data")) {
+	  $imageLink = CGI::a({href => $userListURL}, CGI::img({src=>$imageURL, border=>0, alt=>"Link to Edit Page for ".$User->user_id}));
+	}
 	
 	my @tableCells;
 	
@@ -1726,9 +1784,10 @@ sub recordEditHTML {
 
 	# User Fields
 	foreach my $field ($User->NONKEYFIELDS) {
-		my $fieldName = 'user.' . $User->user_id . '.' . $field,
+	        my $fieldName = 'user.' . $User->user_id . '.' . $field,
 		my $fieldValue = $User->$field;
 		my %properties = %{ FIELD_PROPERTIES()->{$field} };
+	        next if $properties{access} eq 'hidden';
 		$properties{access} = 'readonly' unless $editMode;
 		$properties{type} = 'email' if ($field eq 'email_address' and !$editMode and !$passwordMode);
 		$fieldValue = $self->nbsp($fieldValue) unless $editMode;
@@ -1783,8 +1842,10 @@ sub printTableHTML {
 	#my $hrefPrefix = $r->uri . "?" . $self->url_args(@stateParams); # $self->url_authen_args
 	my @tableHeadings;
 	foreach my $field (@realFieldNames) {
-		my $result = $fieldNames{$field};
-		push @tableHeadings, $result;
+	    my %properties = %{ FIELD_PROPERTIES()->{$field} };
+	    next if $properties{access} eq 'hidden';
+	    my $result = $fieldNames{$field};
+	    push @tableHeadings, $result;
 	};
 	
 	# prepend selection checkbox? only if we're NOT editing!
@@ -1889,8 +1950,8 @@ sub output_JS{
 	my $ce = $r->ce;
 
 	my $site_url = $ce->{webworkURLs}->{htdocs};
-	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/legacy/addOnLoadEvent.js"}), CGI::end_script();
-	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/legacy/show_hide.js"}), CGI::end_script();
+	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/apps/AddOnLoad/addOnLoadEvent.js"}), CGI::end_script();
+	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/apps/ShowHide/show_hide.js"}), CGI::end_script();
 	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/legacy/vendor/tabber.js"}), CGI::end_script();
 	print CGI::start_script({type=>"text/javascript", src=>"$site_url/js/legacy/classlist_handlers.js"}), CGI::end_script();
 	return "";

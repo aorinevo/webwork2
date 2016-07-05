@@ -28,7 +28,7 @@ use strict;
 use warnings;
 #use CGI qw(-nosticky );
 use WeBWorK::CGI;
-use WeBWorK::Utils qw(readFile dequote);
+use WeBWorK::Utils qw(readFile dequote jitar_id_to_seq);
 
 use mod_perl;
 use constant MP2 => ( exists $ENV{MOD_PERL_API_VERSION} and $ENV{MOD_PERL_API_VERSION} >= 2 );
@@ -39,6 +39,26 @@ sub if_loggedin {
 	my ($self, $arg) = @_;
 #	return !$arg;
 	return 1;
+}
+
+sub title {
+    my ($self) = @_;
+    my $r = $self->r;
+    # using the url arguments won't break if the set/problem are invalid
+    my $setID = WeBWorK::ContentGenerator::underscore2nbsp($self->r->urlpath->arg("setID"));
+    my $problemID = $self->r->urlpath->arg("problemID");
+    
+    # if its a problem page for a jitar set we print the pretty version of the id
+    if ($problemID) {
+	my $set = $r->db->getGlobalSet($setID);
+	if ($set && $set->assignment_type eq 'jitar') {
+	    $problemID = join('.',jitar_id_to_seq($problemID));
+	}
+    
+	return $r->maketext("[_1]: Problem [_2]",$setID, $problemID);
+    }
+
+    return $r->urlpath->name;
 }
 
 sub info {
@@ -166,25 +186,20 @@ sub body {
 	# generating module.
 	my $authen_error = MP2 ? $r->notes->get("authen_error") : $r->notes("authen_error");
 	if ($authen_error) {
-		print CGI::div({class=>"ResultsWithError"},
+		print CGI::div({class=>"ResultsWithError", tabindex=>'0'},
 			CGI::p($authen_error)
 		);
 	}
 
-	if ( $externalAuth ) {
+	if ($externalAuth ) {
 		if ($authen_error) {
 			if ($r -> authen() eq "WeBWorK::Authen::LTIBasic") {
-				print CGI::div({class=>"ResultsWithError"},
-				CGI::p({}, CGI::b($course), "uses an external", 
-				"authentication system.  Please go there to try again."));
+				print CGI::p({}, $r->maketext('[_1] uses an external authentication system (e.g., Oncourse,  CAS,  Blackboard, Moodle, Canvas, etc.).  Please return to system you used and try again.', CGI::strong($course)));
 			} else {
 				print CGI::p({}, $r->maketext("_EXTERNAL_AUTH_MESSAGE", CGI::strong($r->maketext($course))));
 			}
 		} else {
-	    	print CGI::p({}, "Your session has expired due to inactivity.  ",
-			CGI::b($course), "uses an external", 
-			"authentication system (e.g., Oncourse,  CAS,  Blackboard, Moodle, Canvas, etc.).  ",
-			"Please return to system you used and enter WeBWorK anew.");
+		    print CGI::p({}, $r->maketext('[_1] uses an external authentication system (e.g., Oncourse,  CAS,  Blackboard, Moodle, Canvas, etc.).  Please return to system you used and try again.', CGI::strong($course)));
 		} 
 	} else {
 		print CGI::p($r->maketext("Please enter your username and password for [_1] below:", CGI::b($r->maketext($course))));
@@ -234,9 +249,9 @@ sub body {
 		# );
 		
 		print CGI::br(),CGI::br();
-		print WeBWorK::CGI_labeled_input(-type=>"text", -id=>"uname", -label_text=>$r->maketext("Username").": ", -input_attr=>{-name=>"user", -value=>"$user"}, -label_attr=>{-id=>"uname_label"});
+		print WeBWorK::CGI_labeled_input(-type=>"text", -id=>"uname", -label_text=>$r->maketext("Username").": ", -input_attr=>{-name=>"user", -value=>"$user",'aria-required'=>'true'}, -label_attr=>{-id=>"uname_label"});
 		print CGI::br();
-		print WeBWorK::CGI_labeled_input(-type=>"password", -id=>"pswd", -label_text=>$r->maketext("Password").": ", -input_attr=>{-name=>"passwd", -value=>"$passwd"}, -label_attr=>{-id=>"pswd_label"});
+		print WeBWorK::CGI_labeled_input(-type=>"password", -id=>"pswd", -label_text=>$r->maketext("Password").": ", -input_attr=>{-name=>"passwd", -value=>"$passwd",'aria-required'=>'true'}, -label_attr=>{-id=>"pswd_label"});
 		print CGI::br();
 		if ($ce -> {session_management_via} ne "session_cookie") {
 			print WeBWorK::CGI_labeled_input(-type=>"checkbox", -id=>"rememberme", -label_text=>$r->maketext("Remember Me"), -input_attr=>{-name=>"send_cookie", -value=>"on"});

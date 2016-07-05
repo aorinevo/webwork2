@@ -240,14 +240,16 @@ sub verify {
 			}
 
 		}
-
+        #warn "LOGIN FAILED: log_error: $log_error; user error: $error";
 		$self->maybe_kill_cookie;
-		if (defined($error) and $error=~/\S/) { # if error message has a least one non-space character. 
-			MP2 ? $r->notes->set(authen_error => $error) : $r->notes("authen_error" => $error);
+		if (defined($error) and $error=~/\S/ and $r->can('notes') ) { # if error message has a least one non-space character. 
+			MP2? $r->notes->set(authen_error => $error) : $r->notes("authen_error" => $error);
+		      # FIXME this is a hack to accomodate the webworkservice remixes
 		}
 	}
 	
 	debug("END VERIFY");
+	debug("result $result");
 	return $result;
 }
 
@@ -294,11 +296,11 @@ sub do_verify {
 	my $db = $r->db;
 	
 	return 0 unless $db;
-	
+	debug("db ok");
 	return 0 unless $self->get_credentials;
-	
+	debug("credentials ok");
 	return 0 unless $self->check_user;
-	
+	debug ("check user ok");
 	my $practiceUserPrefix = $ce->{practiceUserPrefix};
 	if (defined($self->{login_type}) && $self->{login_type} eq "guest"){
 		return $self->verify_practice_user;
@@ -312,7 +314,7 @@ sub get_credentials {
 	my $r = $self->{r};
 	my $ce = $r->ce;
 	my $db = $r->db;
-	
+	debug("self is $self ");
 	# allow guest login: if the "Guest Login" button was clicked, we find an unused
 	# practice user and create a session for it.
 	if ($r->param("login_practice_user")) {
@@ -322,7 +324,7 @@ sub get_credentials {
 		my @GuestUsers = $db->getUsers(@guestUserIDs);
 		my @allowedGuestUsers = grep { $ce->status_abbrev_has_behavior($_->status, "allow_course_access") } @GuestUsers;
 		my @allowedGestUserIDs = map { $_->user_id } @allowedGuestUsers;
-		
+
 		foreach my $userID (List::Util::shuffle(@allowedGestUserIDs)) {
 			if (not $self->unexpired_session_exists($userID)) {
 				my $newKey = $self->create_session($userID);
@@ -338,7 +340,7 @@ sub get_credentials {
 		}
 		
 		$self->{log_error} = "no guest logins are available";
-		$self->{error} = "No guest logins are available. Please try again in a few minutes.";
+		$self->{error} = $r->maketext("No guest logins are available. Please try again in a few minutes.");
 		return 0;
 	}
 	
@@ -346,7 +348,8 @@ sub get_credentials {
 
 	if (defined $cookieUser and defined $r->param("user") ) {
 		if ($cookieUser ne $r->param("user")) {
-			croak ("cookieUser = $cookieUser and paramUser = ". $r->param("user") . " are different.");
+			#croak ("cookieUser = $cookieUser and paramUser = ". $r->param("user") . " are different.");
+			$self->maybe_kill_cookie; # use parameter "user" rather than cookie "user";
 		}
 # I don't understand this next segment.
 # If both key and $cookieKey exist then why not just ignore the cookieKey?
@@ -579,7 +582,7 @@ sub maybe_send_cookie {
 	
 	# (c) the user asked to have a cookie sent and is not a guest user.
 	my $user_requests_cookie = ($self->{login_type} ne "guest"
-		and $r->param("send_cookie"));
+		and ( $r->param("send_cookie")//0 )); # prevent warning if "send_cookie" param is not defined.
 
 	# (d) session management is done via cookies.
 	my $session_management_via_cookies = 
@@ -625,7 +628,13 @@ sub checkPassword {
 	if (defined $Password) {
 		# check against WW password database
 		my $possibleCryptPassword = crypt $possibleClearPassword, $Password->password;
-		if ($possibleCryptPassword eq $Password->password) {
+		my $dbPassword = $Password->password;
+		# This next line explicitly insures that 
+		# blank or null passwords from the database can never 
+		# succeed in matching an entered password
+		# Use case: Moodle wwassignment stores null passwords and forces the creation 
+		# of a key -- Moodle wwassignment does not use  passwords for authentication, only keys.
+		if (($dbPassword =~/\S/) && $possibleCryptPassword eq $Password->password) {
 			$self->write_log_entry("AUTH WWDB: password accepted");
 			return 1;
 		} else {
@@ -727,7 +736,15 @@ sub create_session {
 	my $Key = $db->newKey(user_id=>$userID, key=>$newKey, timestamp=>$timestamp);
 	# DBFIXME this should be a REPLACE
 	eval { $db->deleteKey($userID) };
-	$db->addKey($Key);
+	eval {$db->addKey($Key)};
+	my $fail_to_addKey=1 if $@;
+	if ($fail_to_addKey) {
+		warn "Difficulty adding key for userID $userID: $@ ";
+	}
+	if ($fail_to_addKey) {
+		eval {$db->putKey($Key) };
+		warn "Couldn't put key for userid $userID either: $@" if $@;
+	}
 
 	#if ($ce -> {session_management_via} eq "session_cookie"),
 	#    then the subroutine maybe_send_cookie should send a cookie.
@@ -747,15 +764,18 @@ sub check_session {
 	my $keyMatches = (defined $possibleKey and $possibleKey eq $Key->key);
 	
 	my $timestampValid=0;
-	if ($ce -> {session_management_via} eq "session_cookie" and defined($self->{cookie_timestamp})) {
-		$timestampValid = (time <= $self -> {cookie_timestamp} + $ce->{sessionKeyTimeout});
-	} else {
+# first part of if clause is disabled for now until we figure out long term fix for using cookies
+# safely (see pull request #576)   This means that the database key time is always being used
+# even when in "session_cookie" mode
+#	if ($ce -> {session_management_via} eq "session_cookie" and defined($self->{cookie_timestamp})) {
+#		$timestampValid = (time <= $self -> {cookie_timestamp} + $ce->{sessionKeyTimeout});
+#	} else {
 		$timestampValid = (time <= $Key->timestamp()+$ce->{sessionKeyTimeout});
 		if ($keyMatches and $timestampValid and $updateTimestamp) {
 			$Key->timestamp(time);
 			$db->putKey($Key);
 		}
-	}
+#	}
 	return (1, $keyMatches, $timestampValid);
 }
 
@@ -905,27 +925,48 @@ sub write_log_entry {
 	
 	my ($remote_host, $remote_port);
 
-	# If its apache 2.4 then it has to also mod perl 2.0 or better
 	my $APACHE24 = 0;
-	if (MP2 && Apache2::ServerUtil::get_server_banner() =~ 
-	  m:^Apache/(\d\.\d+\.\d+):) {
-	    $APACHE24 = version->parse($1) >= version->parse('2.4.00');
-	}
+	# If its apache 2.4 then it has to also mod perl 2.0 or better
+	if (MP2) {
+	    my $version;
 
-	# If its apache 2.4 then the API has changed
-	if ($APACHE24) {
-	    	$remote_host = $r->connection->client_addr->ip_get || "UNKNOWN";
-		$remote_port = $r->connection->client_addr->port || "UNKNOWN";
-	} elsif (MP2) {
-		$remote_host = $r->connection->remote_addr->ip_get || "UNKNOWN";
-		$remote_port = $r->connection->remote_addr->port || "UNKNOWN";
-	} else {
-		($remote_port, $remote_host) = unpack_sockaddr_in($r->connection->remote_addr);
-		$remote_host = defined $remote_host ? inet_ntoa($remote_host) : "UNKNOWN";
-		$remote_port = "UNKNOWN" unless defined $remote_port;
+	    # check to see if the version is manually defined
+	    if (defined($ce->{server_apache_version}) &&
+		$ce->{server_apache_version}) {
+		$version = $ce->{server_apache_version};
+	    # otherwise try and get it from the banner
+	    } elsif (Apache2::ServerUtil::get_server_banner() =~ 
+	  m:^Apache/(\d\.\d+):) {
+		$version = $1;
+	    }
+
+	    if ($version) {
+		$APACHE24 = version->parse($version) >= version->parse('2.4');
+	    }
 	}
-	my $user_agent = $r->headers_in->{"User-Agent"};
-	
+	# If its apache 2.4 then the API has changed
+	my $connection;
+	my $user_agent;
+	eval {$connection = $r->connection};
+	if ($@) { # no connection available
+		$remote_host = "UNKNOWN" unless defined $remote_host;
+		$remote_port = "UNKNOWN" unless defined $remote_port;
+		$user_agent = "UNKNOWN";
+	} else { 
+		if ($APACHE24) {
+			$remote_host = $r->connection->client_addr->ip_get || "UNKNOWN";
+			$remote_port = $r->connection->client_addr->port   || "UNKNOWN";
+		} elsif (MP2) {
+			$remote_host = $r->connection->remote_addr->ip_get || "UNKNOWN";
+			$remote_port = $r->connection->remote_addr->port   || "UNKNOWN";
+		} else {
+			($remote_port, $remote_host) = unpack_sockaddr_in($r->connection->remote_addr);
+			$remote_host = defined $remote_host ? inet_ntoa($remote_host) : "UNKNOWN";
+			$remote_port = "UNKNOWN" unless defined $remote_port;
+		}
+
+		$user_agent = $r->headers_in->{"User-Agent"};
+	}
 	my $log_msg = "$message user_id=$user_id login_type=$login_type credential_source=$credential_source host=$remote_host port=$remote_port UA=$user_agent";
 	debug("Writing to login log: '$log_msg'.\n");
 	writeCourseLog($ce, "login_log", $log_msg);

@@ -29,6 +29,7 @@ use warnings;
 use WeBWorK::CGI;
 use WeBWorK::Debug;
 use WeBWorK::ContentGenerator::Grades;
+use WeBWorK::Utils qw(jitar_id_to_seq jitar_problem_adjusted_status wwRound);
 #use WeBWorK::Utils qw(readDirectory list2hash max sortByName);
 use WeBWorK::Utils::SortRecords qw/sortRecords/;
 use WeBWorK::Utils::Grades qw/list_set_versions/;
@@ -339,8 +340,8 @@ sub displaySets {
   # the returning parameter lets us set defaults for versioned sets
 		my $ret = defined($r->param('returning')) ? 
 			$r->param('returning') : 0;
-		$showColumns{'date'} = ($ret && defined($r->param('show_date'))) ? $r->param('show_date') : 1;
-		$showColumns{'testtime'} = ($ret && defined($r->param('show_testtime'))) ? $r->param('show_testtime'):1;
+		$showColumns{'date'} = ($ret && !defined($r->param('show_date'))) ? $r->param('show_date') : 1;
+		$showColumns{'testtime'} = ($ret && !defined($r->param('show_testtime'))) ? $r->param('show_testtime'):1;
 		$showColumns{'index'} = ($ret && defined($r->param('show_index'))) ? $r->param('show_index') : 0;
 		$showColumns{'problems'} = ($ret && defined($r->param('show_problems'))) ? $r->param('show_problems'):0;
 		$showColumns{'section'} = ($ret && defined($r->param('show_section'))) ? $r->param('show_section') : 0;
@@ -579,8 +580,8 @@ sub displaySets {
 # 					$longStatus 	= 'X';
 # 				}
 # 			
-# 				$string     .= threeSpaceFill($longStatus);
-# 				$twoString  .= threeSpaceFill($num_incorrect);
+# 				$string     .= fourSpaceFill($longStatus);
+# 				$twoString  .= fourSpaceFill($num_incorrect);
 # 
 # 				$total      += $probValue;
 # 				$totalRight += round_score($status*$probValue) 
@@ -750,59 +751,71 @@ sub displaySets {
 	my $problem_header = '';
 	# DBFIXME sort in database
 	my @list_problems = sort {$a<=> $b } $db->listGlobalProblems($setName );
-	$problem_header = '<pre>'.join("", map {&threeSpaceFill($_)}  @list_problems  ).'</pre>';
+
+	# for a jitar set we only get the top level problems
+	if($GlobalSet->assignment_type eq 'jitar') {
+	    my @topLevelProblems; 
+	    
+	    foreach my $id (@list_problems) {
+		my @seq = jitar_id_to_seq($id);
+		push @topLevelProblems, $seq[0] if ($#seq == 0);
+	    }
+	    
+	    @list_problems = @topLevelProblems;
+	}	    
+
+
+	$problem_header = '<pre>'.join("", map {&fourSpaceFill($_)}  @list_problems  ).'</pre>';
 
 # changes for gateways/versioned sets here.  in this case we allow instructors
 # to modify the appearance of output, which we do with a form.  so paste in the
 # form header here, and make appropriate modifications
         my $verSelectors = '';
 	if ( $setIsVersioned ) {
-		print CGI::start_form({'method' => 'post', 
+	    print CGI::start_div({'id'=>'screen-options-wrap'});
+		print CGI::start_form({'method' => 'post', 'id'=>'sp-gateway-form',
 				       'action' => $self->systemLink($urlpath,authen=>0),'name' => 'StudentProgress'});
 		print $self->hidden_authen_fields();
-
-#	    $verSelectors = CGI::p({'style'=>'background-color:#eeeeee;color:black;'},
-		print CGI::p({'id'=>'sp-gateway-form','style'=>'background-color:#eeeeee;color:black;'},
-			     "Display options: Show ",
-			     CGI::hidden(-name=>'returning', -value=>'1'),
+		   print CGI::start_div();		   
+			print	  CGI::h4("Display options: Show ");	
+			print   CGI::start_div({'class'=>'metabox-prefs'});	   
+			print     CGI::hidden(-name=>'returning', -value=>'1'),
 			     CGI::checkbox(-name=>'show_best_only', -value=>'1', 
 					   -checked=>$showBestOnly, 
-					   -label=>' only best scores; '),
+					   -label=>'only best scores'),
 #			     CGI::checkbox(-name=>'show_index', -value=>'1', 
 #					   -checked=>$showColumns{'index'},
 #					   -label=>' success indicator; '),
 			     CGI::checkbox(-name=>'show_date', -value=>'1', 
 					   -checked=>$showColumns{'date'},
-					   -label=>' test date; '),
+					   -label=>'test date'),
 			     CGI::checkbox(-name=>'show_testtime', -value=>'1', 
 					   -checked=>$showColumns{'testtime'},
-					   -label=>' test time; '),
+					   -label=>'test time'),
 			     CGI::checkbox(-name=>'show_problems', -value=>'1', 
 					   -checked=>$showColumns{'problems'},
-					   -label=>'problems;'), "\n", CGI::br(), "\n",
+					   -label=>'problems'),
 			     CGI::checkbox(-name=>'show_section', -value=>'1', 
 					   -checked=>$showColumns{'section'}, 
-					   -label=>' section #; '),
+					   -label=>'section #'),
 			     CGI::checkbox(-name=>'show_recitation', -value=>'1', 
 					   -checked=>$showColumns{'recit'},
-					   -label=>' recitation #; '),
+					   -label=>'recitation #'),
 			     CGI::checkbox(-name=>'show_login', -value=>'1', 
 					   -checked=>$showColumns{'login'}, 
-					   -label=>'login'), "\n", CGI::br(), "\n",
-			     CGI::submit(-value=>'Update Display'),
-			     );
+					   -label=>'login'), CGI::br();
+			print CGI::end_div();		    
+			print CGI::submit(-value=>'Update Display');	
+		print CGI::end_div();
 		print CGI::end_form();
+	  print CGI::end_div();
 	}
 
 #####################################################################################
 	print
 #		CGI::br(),
 		CGI::br(),
-		CGI::p({},$r->maketext('A period (.) indicates a problem has not been attempted, a &quot;C&quot; indicates a problem has been answered 100% correctly, and a number from 0 to 99 indicates the percentage of partial credit earned. The number on the second line gives the number of incorrect attempts.'),
-#		'The success indicator,' ,CGI::i('Ind'),', for each student is calculated as',
-#		CGI::br(),
-#		'100*(totalNumberOfCorrectProblems / totalNumberOfProblems)^2 / (AvgNumberOfAttemptsPerProblem)',CGI::br(),
-#		'or 0 if there are no attempts.'
+		CGI::p({},$r->maketext('A period (.) indicates a problem has not been attempted, and a number from 0 to 100 indicates the grade earned. The number on the second line gives the number of incorrect attempts.'),
 		),
 		CGI::br(),
 		$r->maketext("Click on a student's name to see the student's version of the homework set. Click heading to sort table."),
@@ -881,9 +894,11 @@ sub displaySets {
     # and to make formatting nice for students who haven't taken any tests
     #    (the total number of columns is two more than this; we want the 
     #    number that missing record information should span)
-	my $numCol = 1 + $showColumns{'date'} + $showColumns{'testtime'} + 
-#		$showColumns{'index'} +
-		$showColumns{'problems'};
+
+	my $numCol = 1;
+	$numCol++ if $showColumns{'date'};
+	$numCol++ if $showColumns{'testtime'};
+	$numCol++ if $showColumns{'problems'};
 
 	foreach my $rec (@augmentedUserRecords) {
 		my $fullName = join("", $rec->{first_name}," ", $rec->{last_name});
@@ -892,7 +907,7 @@ sub displaySets {
 		if ( ! $setIsVersioned ) {
 		    print CGI::Tr({},
 			CGI::td({},CGI::a({-href=>$rec->{act_as_student}},$fullName), CGI::br(), CGI::a({-href=>"mailto:$email"},$email)),
-			CGI::td( sprintf("%0.2f",$rec->{score}) ), # score
+			CGI::td(wwRound(2,$rec->{score}) ), # score
 			CGI::td($rec->{total}), # out of 
 #			CGI::td(sprintf("%0.0f",100*($rec->{index}) )),   # indicator
 			CGI::td($rec->{problemString}), # problems
@@ -922,7 +937,7 @@ sub displaySets {
 		    
 				# build columns to show
 				push(@cols, $nameEntry, 
-				     sprintf("%0.2f",$rec->{score}),
+				     wwRound(2,$rec->{score}),
 				     $rec->{total});
 				push(@cols, $self->nbsp($rec->{date})) 
 				    if ($showColumns{'date'});
@@ -1037,11 +1052,18 @@ sub grade_set {
 		}
 		
 		
+	# for jitar sets we only use the top level problems
+	if ($set->assignment_type && $set->assignment_type eq 'jitar') {
+	    my @topLevelProblems;
+	    foreach my $problem (@problemRecords) {
+		my @seq = jitar_id_to_seq($problem->problem_id);
+		push @topLevelProblems, $problem if ($#seq == 0);
+	    }
+	    
+	    @problemRecords = @topLevelProblems;
+	}
 		
-		
-		
-		
-		debug("End collecting problems for set $setName");
+	debug("End collecting problems for set $setName");
 
 	####################
 	# Resort records
@@ -1083,12 +1105,17 @@ sub grade_set {
 				next;
 			}
 			
-		    $status           = $problemRecord->status || 0;
+			$status           = $problemRecord->status || 0;
+
+			if ($set->assignment_type eq 'jitar') {
+			    $status = jitar_problem_adjusted_status($problemRecord,$db);
+			}
+
 			my $attempted     = $problemRecord->attempted;
 			my $num_correct   = $problemRecord->num_correct || 0;
 			my $num_incorrect = $problemRecord->num_incorrect   || 0;
 			$num_of_attempts  = $num_correct + $num_incorrect;
-			
+	
 #######################################################
 			# This is a fail safe mechanism that makes sure that
 			# the problem is marked as attempted if the status has
@@ -1120,19 +1147,19 @@ sub grade_set {
 			if (!$attempted){
 				$longStatus     = '.';
 			} elsif   ($valid_status) {
-				$longStatus     =  int(100*$status+.5) ;
-				$longStatus='C' if ($longStatus==100);
+				$longStatus     = 100*wwRound(2,$status);
+				
 			} else	{
 				$longStatus 	= 'X';
 			}
 		
-                        $class = ($longStatus eq 'C')?"correct": (($longStatus eq '.')?'unattempted':'');
-                        $string      .= '<span class="'.$class.'">'.threeSpaceFill($longStatus).'</span>';
-			$twoString      .= threeSpaceFill($num_incorrect);
+                        $class = ($longStatus eq '100')?"correct": (($longStatus eq '.')?'unattempted':'');
+                        $string      .= '<span class="'.$class.'">'.fourSpaceFill($longStatus).'</span>';
+			$twoString      .= fourSpaceFill($num_incorrect);
 			my $probValue   =  $problemRecord->value;
 			$probValue      =  1 unless defined($probValue) and $probValue ne "";  # FIXME?? set defaults here?
 			$total          += $probValue;
-			$totalRight     += round_score($status*$probValue) if $valid_status;
+			$totalRight     += $status*$probValue if $valid_status;
 				
 # 				
 # 			# initialize the number of correct answers 
@@ -1158,7 +1185,7 @@ sub grade_set {
 		
 		}  # end of problem record loop
 
-
+		$totalRight = wwRound(2,$totalRight);  # round the final total	
 
 		return($status,  
 			   $longStatus, 
@@ -1173,16 +1200,14 @@ sub grade_set {
 #################################
 # Utility function NOT a method
 #################################
-sub threeSpaceFill {
+sub fourSpaceFill {
 	my $num = shift @_ || 0;
 
-	if (length($num)<=1) {return "$num".'&nbsp;&nbsp;';}
-	elsif (length($num)==2) {return "$num".'&nbsp;';}
-	else {return "## ";}
+	if (length($num)<=1) {return "$num".'&nbsp;&nbsp;&nbsp;';}
+	elsif (length($num)==2) {return "$num".'&nbsp;&nbsp;';}
+	elsif (length($num)==3) {return "$num".'&nbsp;';}
+	else {return "### ";}
 }
 
-sub round_score{
-	return shift;
-}
 
 1;

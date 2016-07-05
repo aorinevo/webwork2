@@ -39,8 +39,7 @@ use WeBWorK::Utils::FilterRecords qw/filterRecords/;
 use mod_perl;
 use constant MP2 => ( exists $ENV{MOD_PERL_API_VERSION} and $ENV{MOD_PERL_API_VERSION} >= 2 );
 
-#my $REFRESH_RESIZE_BUTTON = "Set preview to: ";  # handle submit value idiocy
-my $UPDATE_SETTINGS_BUTTON = "Update settings and refresh page"; # handle submit value idiocy
+
 sub initialize {
 	my ($self) = @_;
 	my $r      = $self->r;
@@ -65,15 +64,47 @@ sub initialize {
 	my $scoringDirectory  =    $ce->{courseDirs}->{scoring};
 	my $templateDirectory =    $ce->{courseDirs}->{templates};
 	
-	my $action            =    $r->param('action') ; 
 	my $openfilename      =	   $r->param('openfilename');
 	my $savefilename      =	   $r->param('savefilename');
-	
+	my $mergefile         =    $r->param('merge_file');
 	
 	#FIXME  get these values from global course environment (see subroutines as well)
 	my $default_msg_file       =    'default.msg';  
 	my $old_default_msg_file   =    'old_default.msg';
-	
+
+	#if mergefile or openfilename haven't been defined via parameter
+	# check the database to see if there is a file we should use.
+	# if they have been defined via parameter then we should update the db
+
+	if (defined($openfilename) && $openfilename) {
+	  $db->setSettingValue("${user}_openfile",$openfilename);
+	} elsif ($db->settingExists("${user}_openfile")) {
+	  $openfilename = $db->getSettingValue("${user}_openfile");
+	}
+	  
+	if (defined($mergefile) && $mergefile) {
+	  $db->setSettingValue("${user}_mergefile",$mergefile);
+	} elsif ($db->settingExists("${user}_mergefile")) {
+	  $mergefile = $db->getSettingValue("${user}_mergefile");
+	}
+
+	# Figure out action from submit data
+	my $action = ''; 
+	if ($r->param('sendEmail')) {
+	    $action = 'sendEmail';
+	} elsif ($r->param('saveMessage')) {
+	    $action = 'saveMessage';
+	} elsif ($r->param('saveAs')) {
+	    $action = 'saveAs';
+	} elsif ($r->param('saveDefault')) {
+	    $action = 'saveDefault';
+	} elsif ($r->param('openMessage')) {
+	    $action = 'openMessage';
+	} elsif ($r->param('updateSettings')) {
+	    $action = 'updateSettings';
+	} elsif ($r->param('previewMessage')) {
+	    $action = 'previewMessage';
+	}
 
 	#  get user record
 	my $ur = $self->{db}->getUser($user);
@@ -87,7 +118,7 @@ sub initialize {
 	$self->{columns}                =   (defined($r->param('columns'))) ? $r->param('columns') : $ce->{mail}->{editor_window_columns};
 	$self->{default_msg_file}	    =   $default_msg_file;
 	$self->{old_default_msg_file}   =   $old_default_msg_file;
-	$self->{merge_file}             =   (defined($r->param('merge_file'  )))    ? $r->param('merge_file')   : 'None';
+	$self->{merge_file}             =   $mergefile;
 	#$self->{preview_user}           =   (defined($r->param('preview_user')))    ? $r->param('preview_user') : $user;
 	# an expermiment -- share the scrolling list for preivew and sendTo actions.
 	my @classList                   =   (defined($r->param('classList')))    ? $r->param('classList') : ($user);
@@ -197,9 +228,9 @@ sub initialize {
 	# Determine the file name to save message into
 	#################################################################
 	my $output_file      = 'FIXME no output file specified';	
-	if (defined($action) and $action eq 'Save as Default') {
+	if ($action eq 'saveDefault') {
 		$output_file  = $default_msg_file;
-	} elsif ( defined($action) and ($action =~/save/i)) {
+	} elsif ($action eq 'saveMessage' or $action eq 'saveAs') {
 		if (defined($savefilename) and $savefilename ) {
 			$output_file  = $savefilename;
 		} else {
@@ -235,7 +266,7 @@ sub initialize {
 	#warn "Action = $action";
 	my $input_source;
 	if ($action){	
-		$input_source =  ( defined( $r->param('body') ) and $action ne 'Open' ) ? 'form' : 'file';}
+		$input_source =  ( defined( $r->param('body') ) and $action ne 'openMessage' ) ? 'form' : 'file';}
 	else { $input_source = ( defined($r->param('body')) ) ? 'form' : 'file';}
 
 	#############################################################################################
@@ -258,18 +289,29 @@ sub initialize {
 		# Sanity check: body must contain non-white space
 		$self->addbadmessage(CGI::p('You didn\'t enter any message.')) unless ($r->param('body') =~ /\S/);
 		$r_text               =    \$body;
-
+		
 	}
 	
 	my $remote_host;
-	# If its apache 2.4 then it has to also mod perl 2.0 or better
 	my $APACHE24 = 0;
+	# If its apache 2.4 then it has to also mod perl 2.0 or better
 	if (MP2) {
-	    Apache2::ServerUtil::get_server_banner() =~ 
-		       m:^Apache/(\d\.\d+\.\d+):;
-	    $APACHE24 = version->parse($1) >= version->parse('2.4.00');
+	    my $version;
+	    
+	    # check to see if the version is manually defined
+	    if (defined($ce->{server_apache_version}) &&
+		$ce->{server_apache_version}) {
+		$version = $ce->{server_apache_version};
+		# otherwise try and get it from the banner
+	    } elsif (Apache2::ServerUtil::get_server_banner() =~ 
+		   m:^Apache/(\d\.\d+):) {
+		$version = $1;
+	    }
+	    
+	    if ($version) {
+		$APACHE24 = version->parse($version) >= version->parse('2.4');
+	    }
 	}
-
 	# If its apache 2.4 then the API has changed
 	if ($APACHE24) {
 	    $remote_host = $r->connection->client_addr->ip_get || "UNKNOWN";
@@ -319,8 +361,8 @@ sub initialize {
 	my $script_action     = '';
 	
 	
-	if(not defined($action) or $action eq $r->maketext('Open')  
-	   or $action eq $r->maketext($UPDATE_SETTINGS_BUTTON )){  
+	if(not $action or $action eq 'openMessage'  
+	   or $action eq 'updateSettings'){  
 
 		return '';
 	}
@@ -335,7 +377,7 @@ sub initialize {
 	#############################################################################################
 
 
-	if ($action eq 'Save' or $action eq 'Save as:' or $action eq 'Save as Default') {
+	if ($action eq 'saveMessage' or $action eq 'saveAs' or $action eq 'saveDefault') {
 	
 		#warn "FIXME Saving files  action = $action  outputFileName=$output_file";
 		
@@ -352,7 +394,7 @@ sub initialize {
 		#################################################################
 		# overwrite protection
 		#################################################################
-		if ($action eq 'Save as:' and -e "$emailDirectory/$output_file") {
+		if ($action eq 'saveAs' and -e "$emailDirectory/$output_file") {
 			$self->addbadmessage(CGI::p("The file $emailDirectory/$output_file already exists and cannot be overwritten",
 			                         "The message was not saved"));
 			return;
@@ -361,7 +403,7 @@ sub initialize {
 		#################################################################
 	    # Back up existing file?
 	    #################################################################
-	    if ($action eq 'Save as Default' and -e "$emailDirectory/$default_msg_file") {
+	    if ($action eq 'saveDefault' and -e "$emailDirectory/$default_msg_file") {
 	    	rename("$emailDirectory/$default_msg_file","$emailDirectory/$old_default_msg_file") or 
 	    	       die "Can't rename $emailDirectory/$default_msg_file to $emailDirectory/$old_default_msg_file ",
 	    	           "Check permissions for webserver on directory $emailDirectory. $!";
@@ -372,13 +414,15 @@ sub initialize {
 		#################################################################
 		$self->saveProblem($temp_body, "${emailDirectory}/$output_file" ) unless ($output_file =~ /^[~.]/ || $output_file =~ /\.\./ || not $output_file =~ m|\.msg$|);
 		unless ( $self->{submit_message} or not -w "${emailDirectory}/$output_file" )  {  # if there are no errors report success
-			$self->addgoodmessage(CGI::p("Message saved to file <code>${emailDirectory}/$output_file</code>."));
+		  $self->addgoodmessage(CGI::p("Message saved to file <code>${emailDirectory}/$output_file</code>."));
+		  $self->{input_file} = $output_file;
+		  $db->setSettingValue("${user}_openfile",$output_file);
 		}    
 
-	} elsif ($action eq 'Preview message') {
+	} elsif ($action eq 'previewMessage') {
 		$self->{response}         = 'preview';
 	
-	} elsif ($action eq 'Send Email') {
+	} elsif ($action eq 'sendEmail') {
 		# verify format of From address (one valid rfc2822 address)
 		my @parsed_from_addrs = Email::Address->parse($self->{from});
 		unless (@parsed_from_addrs == 1) {
@@ -610,7 +654,7 @@ sub print_form {
 
 			 CGI::td({},
 			     CGI::strong($r->maketext("Message file: ")), $input_file,"\n",CGI::br(),
-				 CGI::submit(-name=>'action', -value=>$r->maketext('Open')), '&nbsp;&nbsp;&nbsp;&nbsp;',"\n",
+				 CGI::submit(-name=>'openMessage', -value=>$r->maketext('Open')), '&nbsp;&nbsp;&nbsp;&nbsp;',"\n",
 				 CGI::popup_menu(-name=>'openfilename', 
 				                 -values=>\@sorted_messages, 
 				                 -default=>$input_file
@@ -635,7 +679,7 @@ sub print_form {
 				$r->maketext("Editor rows: "), CGI::textfield(-name=>'rows', -size=>3, -value=>$rows),
 				$r->maketext(" columns: "), CGI::textfield(-name=>'columns', -size=>3, -value=>$columns),
 				CGI::br(),
-				CGI::submit(-name=>'action', -value=>$r->maketext($UPDATE_SETTINGS_BUTTON)),
+				CGI::submit(-name=>'updateSettings', -value=>$r->maketext("Update settings and refresh page")),
 				 
 			),
 	#############################################################################################
@@ -651,7 +695,7 @@ sub print_form {
 		                                   -default=>'studentID', -linebreak=>0), 
 							CGI::br(),$scrolling_user_list,
 							CGI::i($r->maketext("Preview set to: ")), $preview_record->last_name,'(', $preview_record->user_id,')',
-							CGI::submit(-name=>'action', -value=>'preview',-label=>$r->maketext('Preview message')),'&nbsp;&nbsp;',
+							CGI::submit(-name=>'previewMessage', -value=>'preview',-label=>$r->maketext('Preview message')),'&nbsp;&nbsp;',
 					),
 	); # end Tr
 	
@@ -700,19 +744,20 @@ sub print_form {
 	#print actual body of message
 
 	print  "\n", CGI::p( $self->{message}) if defined($self->{message});  
-    print  "\n", CGI::p( CGI::textarea(-name=>'body', -default=>$text, -rows=>$rows, -cols=>$columns, -override=>1));
+	print "\n", CGI::label({'for'=>"email-body"},$r->maketext("Email Body:")),CGI::span({class=>"required-field"},'*');
+	print  "\n", CGI::p( CGI::textarea(-id=>"email-body", -name=>'body', -default=>$text, -rows=>$rows, -cols=>$columns, -override=>1));
 
 	#############################################################################################
 	#	action button table
 	#############################################################################################	
 	print    CGI::table( { -border=>2,-cellpadding=>4},
 				 CGI::Tr( {},
-					 CGI::td({}, CGI::submit(-name=>'action', -value=>$r->maketext('Send Email')) ), "\n",
-					 CGI::td({}, CGI::submit(-name=>'action', -value=>$r->maketext('Save'))," to $output_file"), " \n",
-					 CGI::td({}, CGI::submit(-name=>'action', -value=>$r->maketext('Save as:')),
+					 CGI::td({}, CGI::submit(-name=>'sendEmail', -id=>"sendEmail_id", -value=>$r->maketext('Send Email')) ), "\n",
+					 CGI::td({}, CGI::submit(-name=>'saveMessage', -value=>$r->maketext('Save'))," to $output_file"), " \n",
+					 CGI::td({}, CGI::submit(-name=>'saveAs', -value=>$r->maketext('Save as:')),
 					         CGI::textfield(-name=>'savefilename', -size => 20, -value=> "$output_file", -override=>1)
 					 ), "\n",
-					 CGI::td(CGI::submit(-name=>'action', -value=>$r->maketext('Save as Default'))),
+					 CGI::td(CGI::submit(-name=>'saveDefault', -value=>$r->maketext('Save as Default'))),
 				) 
 	);
 			   
@@ -811,6 +856,7 @@ sub mail_message_to_recipients {
 			$error_messages .= "There were errors in processing user $recipient, merge file $merge_file. \n$@\n" if $@;
 			#warn "message is ok";
 			my $mailer = eval{ Mail::Sender->new({
+					tls_allowed => $ce->{tls_allowed}//1, # the default for this for  Mail::Sender is 1
 					from      => $ce->{mail}{smtpSender},
 					fake_from => $from,
 					to        => $ur->email_address,
@@ -866,6 +912,7 @@ sub email_notification {
 	my $mailing_errors = "";
 	# open MAIL handle
 	my $mailer = Mail::Sender->new({
+		tls_allowed => $self->r->ce->{tls_allowed}//1, # the default for this for  Mail::Sender is 1
 		from => $self->{defaultFrom},
 		to   => $self->{defaultFrom},
 		smtp    => $self->{smtpServer},

@@ -27,6 +27,8 @@ use warnings;
 use Carp;
 use WeBWorK::Debug;
 use WeBWorK::Localize;
+use WeBWorK::DB qw(validateKeyfieldValue);
+
 use Scalar::Util qw(weaken);
 {
 	no warnings "redefine";
@@ -42,6 +44,8 @@ use Scalar::Util qw(weaken);
 =head1 VIRTUAL HEIRARCHY
 
 PLEASE FOR THE LOVE OF GOD UPDATE THIS IF YOU CHANGE THE HEIRARCHY BELOW!!!
+
+Note:  Only database keyfield values can be used as path parameters.  
 
  root                                /
  
@@ -79,7 +83,7 @@ PLEASE FOR THE LOVE OF GOD UPDATE THIS IF YOU CHANGE THE HEIRARCHY BELOW!!!
  instructor_users_assigned_to_set    /$courseID/instructor/sets/$setID/users/
  
  instructor_set_list2                 /$courseID/instructor/sets2/
- instructor_set_detail2               /$courseID/instructor/sets2/$setID/ #not created yet
+ instructor_set_detail2               /$courseID/instructor/sets2/$setID/
  instructor_users_assigned_to_set2    /$courseID/instructor/sets2/$setID/users/ #not created yet
 
 
@@ -128,12 +132,15 @@ PLEASE FOR THE LOVE OF GOD UPDATE THIS IF YOU CHANGE THE HEIRARCHY BELOW!!!
  instructor_set_statistics_old           /$courseID/instructor/stats_old/set/$setID/
  instructor_user_statistics_old          /$courseID/instructor/stats_old/student/$userID/
  
+ instructor_gradebook                  /$courseID/instructor/gradebook/
+ 
  instructor_progress                  /$courseID/instructor/StudentProgress/
  instructor_set_progress              /$courseID/instructor/StudentProgress/set/$setID/
  instructor_user_progress             /$courseID/instructor/StudentProgress/student/$userID/
  
  problem_list                        /$courseID/$setID/
  problem_detail                      /$courseID/$setID/$problemID/
+ show_me_another                     /$courseID/$setID/$problemID/show_me_another
 answer_log                           /$courseID/show_answers/
  achievements                        /$courseID/achievements
  instructor_achievement_list         /$courseID/instructor/achievement_list
@@ -253,7 +260,7 @@ our %pathTypes = (
 		match   => qr|^proctored_quiz_mode/([^/]+)/|,
 		capture => [ qw/setID/ ],
 		produce => 'proctored_quiz_mode/$setID/',
-		display => 'WeBWorK::ContentGenerator::GatewayQuiz',
+		display => 'WeBWorK::ContentGenerator::ProctoredGatewayQuiz',
 	},
 	proctored_gateway_proctor_login => {
 		name    => 'Proctored Gateway Quiz $setID Proctor Login',
@@ -310,7 +317,7 @@ our %pathTypes = (
 		display => 'WeBWorK::ContentGenerator::Logout',
 	},
 	options => {
-		name    => 'Password/Email',
+		name    => 'User Settings',
 		parent  => 'set_list',
 		kids    => [ qw// ],
 		match   => qr|^options/|,
@@ -350,7 +357,7 @@ our %pathTypes = (
 			instructor_get_target_set_problems instructor_get_library_set_problems instructor_compare
 			instructor_config
 			instructor_scoring instructor_scoring_download instructor_mail_merge
-			instructor_preflight instructor_statistics instructor_statistics_old
+			instructor_preflight instructor_statistics instructor_statistics_old instructor_gradebook
 			instructor_progress			
                         instructor_problem_grader
 		/ ],
@@ -363,7 +370,7 @@ our %pathTypes = (
 	################################################################################
 	
 	instructor_user_list => {
-		name    => 'Classlist Editor',
+		name    => 'Old Classlist Editor',
 		parent  => 'instructor_tools',
 		kids    => [ qw/instructor_user_detail/ ],
 		match   => qr|^users/|,
@@ -372,7 +379,7 @@ our %pathTypes = (
 		display => 'WeBWorK::ContentGenerator::Instructor::UserList',
 	},
 	instructor_user_list2 => {
-		name    => 'Classlist Editor2',
+		name    => 'Classlist Editor',
 		parent  => 'instructor_tools',
 		kids    => [ qw/instructor_user_detail/ ],
 		match   => qr|^users2/|,
@@ -382,7 +389,7 @@ our %pathTypes = (
 	},
 	instructor_user_detail => {
 		name    => 'Sets assigned to $userID',
-		parent  => 'instructor_user_list',
+		parent  => 'instructor_user_list2',
 		kids    => [ qw/instructor_sets_assigned_to_user/ ],
 		match   => qr|^([^/]+)/|,
 		capture => [ qw/userID/ ],
@@ -402,7 +409,7 @@ our %pathTypes = (
 	################################################################################
 	
 	instructor_set_list => {
-		name    => 'Hmwk Sets Editor',
+		name    => 'Old Hmwk Sets Editor',
 		parent  => 'instructor_tools',
 		kids    => [ qw/instructor_set_detail/ ],
 		match   => qr|^sets/|,
@@ -411,9 +418,9 @@ our %pathTypes = (
 		display => 'WeBWorK::ContentGenerator::Instructor::ProblemSetList',
 	},
 	instructor_set_list2 => {
-		name    => 'Hmwk Sets Editor2',
+		name    => 'Hmwk Sets Editor',
 		parent  => 'instructor_tools',
-		kids    => [ qw/instructor_set_detail/ ],
+		kids    => [ qw/instructor_set_detail2/ ],
 		match   => qr|^sets2/|,
 		capture => [ qw// ],
 		produce => 'sets2/',
@@ -421,13 +428,24 @@ our %pathTypes = (
 	},
 	instructor_set_detail => {
 		name    => 'Set Detail for set $setID',
-		parent  => 'instructor_set_list',
+		parent  => 'instructor_set_list2',
 		kids    => [ qw/instructor_users_assigned_to_set/ ],
 		match   => qr|^([^/]+)/|,
 		capture => [ qw/setID/ ],
 		produce => '$setID/',
 		display => 'WeBWorK::ContentGenerator::Instructor::ProblemSetDetail',
 	},
+
+	instructor_set_detail2 => {
+		name    => 'Set Detail 2 for set $setID',
+		parent  => 'instructor_set_list2',
+		kids    => [ qw/instructor_users_assigned_to_set/ ],
+		match   => qr|^([^/]+)/|,
+		capture => [ qw/setID/ ],
+		produce => '$setID/',
+		display => 'WeBWorK::ContentGenerator::Instructor::ProblemSetDetail2',
+	},
+
 	instructor_users_assigned_to_set => {
 		name    => 'Users Assigned to Set $setID',
 		parent  => 'instructor_set_detail',
@@ -439,7 +457,7 @@ our %pathTypes = (
 	},
 
         instructor_problem_grader => {
-		name    => 'Manual Grader for Set $setID Problem $problemID',
+		name    => 'Manual Grader',
 		parent  => 'instructor_tools',
 		kids    => [ qw// ],
 		match   => qr|^grader/([^/]+)/([^/]+)/|,
@@ -762,6 +780,36 @@ our %pathTypes = (
 
 	################################################################################
 	
+	instructor_gradebook => {
+		name    => 'GradeBook',
+		parent  => 'instructor_tools',
+		kids    => [ qw/instructor_gradebook_set_progress instructor_gradebook_user_progress/ ],
+		match   => qr|^gradebook/|,
+		capture => [ qw// ],
+		produce => 'gradebook/',
+		display => 'WeBWorK::ContentGenerator::Instructor::GradeBook',
+	},
+	instructor_gradebook_set_progress => {
+		name    => 'GradeBook',
+		parent  => 'instructor_gradebook',
+		kids    => [ qw// ],
+		match   => qr|^(set)/([^/]+)/|,
+		capture => [ qw/statType setID/ ],
+		produce => 'set/$setID/',
+		display => 'WeBWorK::ContentGenerator::Instructor::GradeBook',
+	},
+	instructor_gradebook_user_progress => {
+		name    => 'GradeBook',
+		parent  => 'instructor_gradebook',
+		kids    => [ qw// ],
+		match   => qr|^(student)/([^/]+)/|,
+		capture => [ qw/statType userID/ ],
+		produce => 'student/$userID/',
+		display => 'WeBWorK::ContentGenerator::Instructor::GradeBook',
+	},	
+
+	################################################################################
+	
 	instructor_progress => {
 		name    => 'Student Progress',
 		parent  => 'instructor_tools',
@@ -804,12 +852,22 @@ our %pathTypes = (
 	problem_detail => {
 		name    => '$problemID',
 		parent  => 'problem_list',
-		kids    => [ qw// ],
+		kids    => [ qw/show_me_another/ ],
 		match   => qr|^([^/]+)/|,
 		capture => [ qw/problemID/ ],
 		produce => '$problemID/',
 		display => 'WeBWorK::ContentGenerator::Problem',
+        },
+        show_me_another => {
+		name    => 'Show Me Another',
+		parent  => 'problem_detail',
+		kids    => [ qw// ],
+		match   => qr|^show_me_another/|,
+		capture => [ qw// ],
+		produce => 'show_me_another/',
+		display => 'WeBWorK::ContentGenerator::ShowMeAnother',
 	},
+
 	
 );
 
@@ -1243,6 +1301,10 @@ sub visitPathTypeNode($$$$) {
 			for (my $i = 0; $i < $max; $i++) {
 				my $name = $capture_names[$i];
 				my $value = $capture_values[$i];
+
+				# check to see if the url path parameter is a valid keyfield for the DB.
+				WeBWorK::DB::validateKeyfieldValue($name,$value,1);
+
 				if ($i > $nexpected) {
 					warn "captured an unexpected argument: $value -- ignoring it.";
 					next;
